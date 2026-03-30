@@ -232,7 +232,7 @@ with st.sidebar:
         selected_category = "All Categories"
 
     st.markdown("---")
-    st.markdown("<div style='color:#555; font-size:0.75rem;'>Premium Line Dashboard<br>Powered by Zoho Inventory API</div>", unsafe_allow_html=True)
+    st.markdown("<div style='color:#555; font-size:0.75rem;'>Stock Dashboard<br>Powered by Zoho Inventory API</div>", unsafe_allow_html=True)
 
 
 # ─── Main Area ────────────────────────────────────────────────────────────────
