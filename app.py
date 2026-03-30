@@ -125,11 +125,16 @@ section[data-testid="stSidebar"] .stButton > button {
 </style>
 """, unsafe_allow_html=True)
 
+# ─── 1. Initialize Session State (MODIFIED: Moved here to avoid AttributeError) ───
+if "items_df" not in st.session_state:
+    st.session_state.items_df = None
+if "last_updated" not in st.session_state:
+    st.session_state.last_updated = None
+
 
 # ─── Zoho API Functions ───────────────────────────────────────────────────────
 
 def get_access_token(client_id, client_secret, refresh_token):
-    """Get fresh access token using refresh token"""
     url = "https://accounts.zoho.com/oauth/v2/token"
     params = {
         "refresh_token": refresh_token,
@@ -149,62 +154,29 @@ def get_access_token(client_id, client_secret, refresh_token):
 
 
 def get_all_items(access_token, org_id):
-    """Fetch all items from Zoho Inventory with pagination"""
     all_items = []
     page = 1
-    headers = {
-        "Authorization": f"Zoho-oauthtoken {access_token}"
-    }
-
+    headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
     while True:
         url = f"https://www.zohoapis.com/inventory/v1/items"
-        params = {
-            "organization_id": org_id,
-            "page": page,
-            "per_page": 200
-        }
+        params = {"organization_id": org_id, "page": page, "per_page": 200}
         try:
             response = requests.get(url, headers=headers, params=params, timeout=20)
             data = response.json()
-
             if data.get("code") != 0:
                 return None, data.get("message", "API Error")
-
             items = data.get("items", [])
             all_items.extend(items)
-
-            # Check if there are more pages
             page_context = data.get("page_context", {})
-            has_more = page_context.get("has_more_page", False)
-
-            if not has_more:
+            if not page_context.get("has_more_page", False):
                 break
             page += 1
-
         except Exception as e:
             return None, str(e)
-
     return all_items, None
 
 
-def get_warehouses(access_token, org_id):
-    """Fetch all warehouses"""
-    headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
-    url = "https://www.zohoapis.com/inventory/v1/warehouses"
-    params = {"organization_id": org_id}
-
-    try:
-        response = requests.get(url, headers=headers, params=params, timeout=15)
-        data = response.json()
-        if data.get("code") == 0:
-            return data.get("warehouses", []), None
-        return None, data.get("message", "Error fetching warehouses")
-    except Exception as e:
-        return None, str(e)
-
-
 def build_dataframe(items):
-    """Build a clean DataFrame from items"""
     rows = []
     for item in items:
         row = {
@@ -220,16 +192,12 @@ def build_dataframe(items):
             "Rate": item.get("rate", 0) or 0,
             "Item ID": item.get("item_id", ""),
         }
-
-        # Warehouse-specific stock
         warehouse_stocks = item.get("warehouse_details", [])
         for wh in warehouse_stocks:
             wh_name = wh.get("warehouse_name", "Unknown")
             wh_stock = wh.get("warehouse_actual_available_stock", 0) or 0
             row[f"📦 {wh_name}"] = wh_stock
-
         rows.append(row)
-
     return pd.DataFrame(rows)
 
 
@@ -252,15 +220,11 @@ with st.sidebar:
     show_low_stock = st.checkbox("⚠️ Low Stock Only", value=False)
     search_query = st.text_input("🔍 Search by name or SKU", placeholder="Type to search...")
 
-    # Brand & Category filters (populated after data load)
+    # Now this won't crash because items_df is initialized at the top
     if st.session_state.items_df is not None:
         df_all = st.session_state.items_df
-
-        # Brand filter
         brands = ["All Brands"] + sorted(df_all["Brand"].dropna().unique().tolist())
         selected_brand = st.selectbox("🏷️ Brand", brands)
-
-        # Category filter
         categories = ["All Categories"] + sorted(df_all["Category"].dropna().unique().tolist())
         selected_category = st.selectbox("📂 Category", categories)
     else:
@@ -268,10 +232,7 @@ with st.sidebar:
         selected_category = "All Categories"
 
     st.markdown("---")
-    st.markdown(
-        "<div style='color:#555; font-size:0.75rem;'>Premium Line Dashboard<br>Powered by Zoho Inventory API</div>",
-        unsafe_allow_html=True
-    )
+    st.markdown("<div style='color:#555; font-size:0.75rem;'>Premium Line Dashboard<br>Powered by Zoho Inventory API</div>", unsafe_allow_html=True)
 
 
 # ─── Main Area ────────────────────────────────────────────────────────────────
@@ -289,149 +250,86 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# Session state for data
-if "items_df" not in st.session_state:
-    st.session_state.items_df = None
-if "last_updated" not in st.session_state:
-    st.session_state.last_updated = None
-
-
-# Fetch data when button clicked
+# Fetch data logic
 if fetch_btn:
     if not all([client_id, client_secret, refresh_token, org_id]):
         st.error("⚠️ Please fill in all credentials in the sidebar first.")
     else:
         with st.spinner("🔐 Getting access token..."):
             token, err = get_access_token(client_id, client_secret, refresh_token)
-
         if err:
             st.error(f"❌ Token Error: {err}")
         else:
             with st.spinner("📦 Fetching items from Zoho Inventory..."):
                 items, err = get_all_items(token, org_id)
-
             if err:
                 st.error(f"❌ API Error: {err}")
             else:
                 df = build_dataframe(items)
                 st.session_state.items_df = df
                 st.session_state.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                st.success(f"✅ Loaded {len(df)} items successfully!")
+                st.rerun() # Refresh to update filters and metrics
 
 
 # Display data
 if st.session_state.items_df is not None:
     df = st.session_state.items_df.copy()
 
-    # Last updated
-    st.markdown(
-        f"<div style='color:#555; font-size:0.8rem; margin-bottom:16px;'>Last updated: {st.session_state.last_updated}</div>",
-        unsafe_allow_html=True
-    )
+    st.markdown(f"<div style='color:#555; font-size:0.8rem; margin-bottom:16px;'>Last updated: {st.session_state.last_updated}</div>", unsafe_allow_html=True)
 
     # ── Metrics ──
     col1, col2, col3, col4 = st.columns(4)
-
     total_items = len(df)
     total_brands = df["Brand"].nunique()
     low_stock_items = len(df[df["Total Stock"] <= df["Reorder Point"]])
     out_of_stock = len(df[df["Total Stock"] == 0])
 
     with col1:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value">{total_items}</div>
-            <div class="metric-label">Total Items</div>
-        </div>""", unsafe_allow_html=True)
-
+        st.markdown(f'<div class="metric-card"><div class="metric-value">{total_items}</div><div class="metric-label">Total Items</div></div>', unsafe_allow_html=True)
     with col2:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value">{total_brands}</div>
-            <div class="metric-label">Brands</div>
-        </div>""", unsafe_allow_html=True)
-
+        st.markdown(f'<div class="metric-card"><div class="metric-value">{total_brands}</div><div class="metric-label">Brands</div></div>', unsafe_allow_html=True)
     with col3:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value" style="color:#ff4d4d">{low_stock_items}</div>
-            <div class="metric-label">Low Stock</div>
-        </div>""", unsafe_allow_html=True)
-
+        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#ff4d4d">{low_stock_items}</div><div class="metric-label">Low Stock</div></div>', unsafe_allow_html=True)
     with col4:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value" style="color:#ff4d4d">{out_of_stock}</div>
-            <div class="metric-label">Out of Stock</div>
-        </div>""", unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:#ff4d4d">{out_of_stock}</div><div class="metric-label">Out of Stock</div></div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Filters ──
+    # ── Applying Filters ──
     if search_query:
-        mask = (
-            df["Item Name"].str.contains(search_query, case=False, na=False) |
-            df["SKU"].astype(str).str.contains(search_query, case=False, na=False)
-        )
+        mask = (df["Item Name"].str.contains(search_query, case=False, na=False) | 
+                df["SKU"].astype(str).str.contains(search_query, case=False, na=False))
         df = df[mask]
-
     if selected_brand != "All Brands":
         df = df[df["Brand"] == selected_brand]
-
     if selected_category != "All Categories":
         df = df[df["Category"] == selected_category]
-
     if show_low_stock:
         df = df[df["Total Stock"] <= df["Reorder Point"]]
 
     # ── Table ──
     st.markdown(f"### Showing {len(df)} items")
 
-    # Highlight low stock
     def highlight_low_stock(row):
-        if row["Total Stock"] == 0:
-            return ["background-color: #2a0000"] * len(row)
-        elif row["Total Stock"] <= row["Reorder Point"]:
-            return ["background-color: #1a1500"] * len(row)
+        if row["Total Stock"] == 0: return ["background-color: #2a0000"] * len(row)
+        elif row["Total Stock"] <= row["Reorder Point"]: return ["background-color: #1a1500"] * len(row)
         return [""] * len(row)
 
     display_cols = ["SKU", "Item Name", "Brand", "Category", "Total Stock", "Reorder Point", "Available Stock", "Unit"]
     warehouse_cols = [c for c in df.columns if c.startswith("📦")]
-    display_cols = display_cols + warehouse_cols
+    display_cols = [c for c in (display_cols + warehouse_cols) if c in df.columns]
 
-    # Only show columns that exist
-    display_cols = [c for c in display_cols if c in df.columns]
-
-    styled_df = df[display_cols].style.apply(highlight_low_stock, axis=1)
-
-    st.dataframe(styled_df, use_container_width=True, height=500)
+    st.dataframe(df[display_cols].style.apply(highlight_low_stock, axis=1), use_container_width=True, height=500)
 
     # ── Export ──
-    st.markdown("---")
-    col_exp1, col_exp2 = st.columns([1, 4])
-    with col_exp1:
-        csv = df[display_cols].to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="⬇️ Export to CSV",
-            data=csv,
-            file_name=f"premium_line_stock_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv"
-        )
+    csv = df[display_cols].to_csv(index=False).encode("utf-8")
+    st.download_button(label="⬇️ Export to CSV", data=csv, file_name=f"stock_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
 
 else:
-    # Empty state
     st.markdown("""
-    <div style="
-        text-align: center;
-        padding: 80px 20px;
-        color: #444;
-    ">
+    <div style="text-align: center; padding: 80px 20px; color: #444;">
         <div style="font-size: 4rem; margin-bottom: 16px;">📦</div>
-        <div style="font-family: 'Syne', sans-serif; font-size: 1.5rem; color: #666; margin-bottom: 8px;">
-            No Data Loaded Yet
-        </div>
-        <div style="font-size: 0.9rem; color: #444;">
-            Fill in your credentials in the sidebar and click <strong style="color:#c8ff00;">Fetch Data from Zoho</strong>
-        </div>
+        <div style="font-family: 'Syne', sans-serif; font-size: 1.5rem; color: #666;">No Data Loaded Yet</div>
+        <div style="font-size: 0.9rem; color: #444;">Fill in credentials and click <strong style="color:#c8ff00;">Fetch Data</strong></div>
     </div>
     """, unsafe_allow_html=True)
