@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime
 
 st.set_page_config(
-    page_title="Premium Line - Stock Dashboard",
+    page_title="Stock Dashboard",
     page_icon="📦",
     layout="wide"
 )
