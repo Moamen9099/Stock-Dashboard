@@ -268,7 +268,14 @@ with st.sidebar:
                 st.session_state.warehouses = warehouses
                 st.session_state.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 st.session_state.error = False
+                st.session_state.raw_sample = items[:2] if items else []
                 st.success(f"✅ {len(df)} items loaded!")
+
+    # ── Debug: show raw API sample ──
+    if "raw_sample" in st.session_state and st.session_state.raw_sample:
+        with st.expander("🔍 Debug: Raw API Sample (first 2 items)"):
+            import json
+            st.code(json.dumps(st.session_state.raw_sample, indent=2, ensure_ascii=False), language="json")
 
 
 # ─── Header ───────────────────────────────────────────────────────────────────
