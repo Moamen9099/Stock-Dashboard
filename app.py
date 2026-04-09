@@ -244,7 +244,15 @@ def build_dataframe(items, details_map=None):
     return df, sorted(warehouse_names)
 
 
-def status_badge(status):
+
+def safe_int(val, default=0):
+    try:
+        v = float(val)
+        return int(v) if v == v else default  # NaN check
+    except (TypeError, ValueError):
+        return default
+
+
     labels = {"ok": ("ok", "In Stock"), "low": ("low", "Low"), "critical": ("critical", "Critical"), "out": ("out", "Out")}
     cls, text = labels.get(status, ("ok", status))
     return f'<span class="badge badge-{cls}">{text}</span>'
@@ -363,66 +371,6 @@ if df_all is None:
     st.stop()
 
 
-# ─── Stats Cards ──────────────────────────────────────────────────────────────
-total_items = len(df_all)
-total_brands = df_all["Brand"].nunique()
-low_stock = len(df_all[df_all["Status"] == "low"])
-critical = len(df_all[df_all["Status"].isin(["critical", "out"])])
-out_of_stock = len(df_all[df_all["Status"] == "out"])
-total_stock_value = int(df_all["Total Stock"].sum())
-total_committed_value = int(df_all["Total Committed"].sum()) if "Total Committed" in df_all.columns else 0
-
-st.markdown(f"""
-<div class="stat-grid">
-    <div class="stat-card">
-        <div class="stat-label">Total Items</div>
-        <div class="stat-value">{total_items:,}</div>
-        <div class="stat-sub">{total_brands} brands</div>
-    </div>
-    <div class="stat-card success">
-        <div class="stat-label">Total Units Available</div>
-        <div class="stat-value">{total_stock_value:,}</div>
-        <div class="stat-sub">across all warehouses</div>
-    </div>
-    <div class="stat-card warning">
-        <div class="stat-label">Total Committed</div>
-        <div class="stat-value">{total_committed_value:,}</div>
-        <div class="stat-sub">reserved / pending orders</div>
-    </div>
-    <div class="stat-card danger">
-        <div class="stat-label">Critical / Out</div>
-        <div class="stat-value">{critical}</div>
-        <div class="stat-sub">{out_of_stock} completely out</div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-# ─── Warehouse Summary Cards ───────────────────────────────────────────────────
-if st.session_state.warehouses:
-    wh_cards_html = "<div style='display:flex; gap:12px; flex-wrap:wrap; margin-bottom:24px;'>"
-    for wh in st.session_state.warehouses:
-        avail_col = f"{wh} — Available"
-        comm_col  = f"{wh} — Committed"
-        avail_total = int(df_all[avail_col].sum()) if avail_col in df_all.columns else 0
-        comm_total  = int(df_all[comm_col].sum())  if comm_col  in df_all.columns else 0
-        wh_cards_html += f"""
-        <div style="background:#1e293b; border:1px solid #334155; border-radius:12px; padding:16px 20px; min-width:200px; flex:1;">
-            <div style="font-size:0.7rem; color:#94a3b8; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">🏭 {wh}</div>
-            <div style="display:flex; gap:20px; align-items:flex-end;">
-                <div>
-                    <div style="font-size:1.5rem; font-weight:700; color:#22c55e;">{avail_total:,}</div>
-                    <div style="font-size:0.7rem; color:#64748b;">Available</div>
-                </div>
-                <div>
-                    <div style="font-size:1.5rem; font-weight:700; color:#f59e0b;">{comm_total:,}</div>
-                    <div style="font-size:0.7rem; color:#64748b;">Committed</div>
-                </div>
-            </div>
-        </div>"""
-    wh_cards_html += "</div>"
-    st.markdown(wh_cards_html, unsafe_allow_html=True)
-
-
 # ─── Filters ──────────────────────────────────────────────────────────────────
 col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 2, 1.5])
 
@@ -451,10 +399,85 @@ if selected_brand != "All Brands":
     df = df[df["Brand"] == selected_brand]
 if selected_cat != "All Categories":
     df = df[df["Category"] == selected_cat]
+if selected_wh != "All Warehouses":
+    avail_col = f"{selected_wh} — Available"
+    if avail_col in df.columns:
+        df = df[df[avail_col] > 0]
+
+
+# ─── Stats Cards (reactive to filters) ────────────────────────────────────────
+total_items = len(df)
+total_brands = df["Brand"].nunique()
+low_stock = len(df[df["Status"] == "low"])
+critical = len(df[df["Status"].isin(["critical", "out"])])
+out_of_stock = len(df[df["Status"] == "out"])
+total_stock_value = safe_int(df["Total Stock"].sum())
+total_committed_value = safe_int(df["Total Committed"].sum()) if "Total Committed" in df.columns else 0
+
+filter_label = ""
+if selected_wh != "All Warehouses":
+    filter_label = f" · {selected_wh}"
+elif selected_brand != "All Brands":
+    filter_label = f" · {selected_brand}"
+elif selected_cat != "All Categories":
+    filter_label = f" · {selected_cat}"
+elif search:
+    filter_label = f" · \"{search}\""
+
+st.markdown(f"""
+<div class="stat-grid">
+    <div class="stat-card">
+        <div class="stat-label">Filtered Items{filter_label}</div>
+        <div class="stat-value">{total_items:,}</div>
+        <div class="stat-sub">{total_brands} brands · {len(df_all):,} total</div>
+    </div>
+    <div class="stat-card success">
+        <div class="stat-label">Units Available</div>
+        <div class="stat-value">{total_stock_value:,}</div>
+        <div class="stat-sub">in filtered selection</div>
+    </div>
+    <div class="stat-card warning">
+        <div class="stat-label">Committed</div>
+        <div class="stat-value">{total_committed_value:,}</div>
+        <div class="stat-sub">reserved / pending orders</div>
+    </div>
+    <div class="stat-card danger">
+        <div class="stat-label">Critical / Out</div>
+        <div class="stat-value">{critical}</div>
+        <div class="stat-sub">{out_of_stock} completely out</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ─── Warehouse Summary Cards (reactive to filters) ────────────────────────────
+if st.session_state.warehouses:
+    wh_cards_html = "<div style='display:flex; gap:12px; flex-wrap:wrap; margin-bottom:24px;'>"
+    show_warehouses = [selected_wh] if selected_wh != "All Warehouses" else st.session_state.warehouses
+    for wh in show_warehouses:
+        avail_col = f"{wh} — Available"
+        comm_col  = f"{wh} — Committed"
+        avail_total = safe_int(df[avail_col].sum()) if avail_col in df.columns else 0
+        comm_total  = safe_int(df[comm_col].sum())  if comm_col  in df.columns else 0
+        wh_cards_html += f"""
+        <div style="background:#1e293b; border:1px solid #334155; border-radius:12px; padding:16px 20px; min-width:180px; flex:1;">
+            <div style="font-size:0.7rem; color:#94a3b8; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">🏭 {wh}</div>
+            <div style="display:flex; gap:20px; align-items:flex-end;">
+                <div>
+                    <div style="font-size:1.5rem; font-weight:700; color:#22c55e;">{avail_total:,}</div>
+                    <div style="font-size:0.7rem; color:#64748b;">Available</div>
+                </div>
+                <div>
+                    <div style="font-size:1.5rem; font-weight:700; color:#f59e0b;">{comm_total:,}</div>
+                    <div style="font-size:0.7rem; color:#64748b;">Committed</div>
+                </div>
+            </div>
+        </div>"""
+    wh_cards_html += "</div>"
+    st.markdown(wh_cards_html, unsafe_allow_html=True)
 
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
-alerts_label = f"🚨 Alerts ({critical_count})" if critical_count > 0 else "Alerts"
+alerts_label = f"🚨 Alerts ({critical})" if critical > 0 else "✅ Alerts"
 tab1, tab2, tab3 = st.tabs(["📋 Inventory Table", "📊 Stock Chart", alerts_label])
 
 
@@ -548,16 +571,15 @@ with tab3:
         if len(out_items) > 0:
             st.markdown(f"##### 🔴 Out of Stock ({len(out_items)} items)")
             for _, row in out_items.iterrows():
-                # build warehouse detail line
                 wh_details = " · ".join(
-                    f"{wh}: Avail <b>0</b> / Comm <b>{int(row.get(f'{wh} — Committed', 0))}</b>"
+                    f"{wh}: Avail <b>0</b> / Comm <b>{safe_int(row.get(f'{wh} — Committed'))}</b>"
                     for wh in st.session_state.warehouses
                     if f"{wh} — Available" in row.index
                 )
                 st.markdown(f"""
                 <div class="alert-card">
                     <div class="alert-title">{row['Name']}</div>
-                    <div class="alert-sub">SKU: {row['SKU']} · Brand: {row['Brand']} · Reorder Point: {int(row['Reorder Point'])}</div>
+                    <div class="alert-sub">SKU: {row['SKU']} · Brand: {row['Brand']} · Reorder Point: {safe_int(row['Reorder Point'])}</div>
                     {f'<div class="alert-sub" style="margin-top:4px;">{wh_details}</div>' if wh_details else ''}
                 </div>
                 """, unsafe_allow_html=True)
@@ -566,14 +588,14 @@ with tab3:
             st.markdown(f"##### 🟠 Critical Stock ({len(crit_items)} items)")
             for _, row in crit_items.iterrows():
                 wh_details = " · ".join(
-                    f"{wh}: Avail <b>{int(row.get(f'{wh} — Available', 0))}</b> / Comm <b>{int(row.get(f'{wh} — Committed', 0))}</b>"
+                    f"{wh}: Avail <b>{safe_int(row.get(f'{wh} — Available'))}</b> / Comm <b>{safe_int(row.get(f'{wh} — Committed'))}</b>"
                     for wh in st.session_state.warehouses
                     if f"{wh} — Available" in row.index
                 )
                 st.markdown(f"""
                 <div class="alert-card warning">
                     <div class="alert-title">{row['Name']}</div>
-                    <div class="alert-sub">SKU: {row['SKU']} · Brand: {row['Brand']} · Total Stock: {int(row['Total Stock'])} · Reorder Point: {int(row['Reorder Point'])}</div>
+                    <div class="alert-sub">SKU: {row['SKU']} · Brand: {row['Brand']} · Total Stock: {safe_int(row['Total Stock'])} · Reorder Point: {safe_int(row['Reorder Point'])}</div>
                     {f'<div class="alert-sub" style="margin-top:4px;">{wh_details}</div>' if wh_details else ''}
                 </div>
                 """, unsafe_allow_html=True)
@@ -582,14 +604,14 @@ with tab3:
             st.markdown(f"##### 🟡 Low Stock ({len(low_items)} items)")
             for _, row in low_items.iterrows():
                 wh_details = " · ".join(
-                    f"{wh}: Avail <b>{int(row.get(f'{wh} — Available', 0))}</b> / Comm <b>{int(row.get(f'{wh} — Committed', 0))}</b>"
+                    f"{wh}: Avail <b>{safe_int(row.get(f'{wh} — Available'))}</b> / Comm <b>{safe_int(row.get(f'{wh} — Committed'))}</b>"
                     for wh in st.session_state.warehouses
                     if f"{wh} — Available" in row.index
                 )
                 st.markdown(f"""
                 <div class="alert-card warning">
                     <div class="alert-title">{row['Name']}</div>
-                    <div class="alert-sub">SKU: {row['SKU']} · Brand: {row['Brand']} · Total Stock: {int(row['Total Stock'])} · Reorder Point: {int(row['Reorder Point'])}</div>
+                    <div class="alert-sub">SKU: {row['SKU']} · Brand: {row['Brand']} · Total Stock: {safe_int(row['Total Stock'])} · Reorder Point: {safe_int(row['Reorder Point'])}</div>
                     {f'<div class="alert-sub" style="margin-top:4px;">{wh_details}</div>' if wh_details else ''}
                 </div>
                 """, unsafe_allow_html=True)
