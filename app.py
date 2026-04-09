@@ -185,7 +185,8 @@ def fetch_warehouse_details(token, org_id, item_ids):
             if d.get("code") == 0:
                 for item in d.get("items", []):
                     iid = str(item.get("item_id", ""))
-                    details_map[iid] = item.get("warehouse_details", [])
+                    # Zoho /itemdetails uses "warehouses" key (not "warehouse_details")
+                    details_map[iid] = item.get("warehouses", [])
         except Exception as e:
             if i == 0:
                 raw_debug = {"error": str(e)}
