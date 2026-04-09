@@ -159,7 +159,8 @@ def fetch_all_items(token, org_id):
 def fetch_warehouse_details(token, org_id, item_ids):
     """Fetch warehouse breakdown for items in batches of 100 using /itemdetails endpoint."""
     headers = {"Authorization": f"Zoho-oauthtoken {token}"}
-    details_map = {}  # item_id -> warehouse_details list
+    details_map = {}
+    raw_debug = {}   # store first batch raw response for debugging
     batch_size = 100
     for i in range(0, len(item_ids), batch_size):
         batch = item_ids[i:i + batch_size]
@@ -172,13 +173,23 @@ def fetch_warehouse_details(token, org_id, item_ids):
                 timeout=30
             )
             d = r.json()
+            if i == 0:
+                # Save first batch response for debug (first 2 items only)
+                raw_debug = {
+                    "endpoint": "/inventory/v1/itemdetails",
+                    "http_status": r.status_code,
+                    "response_code": d.get("code"),
+                    "message": d.get("message", ""),
+                    "first_2_items": d.get("items", [])[:2]
+                }
             if d.get("code") == 0:
                 for item in d.get("items", []):
                     iid = str(item.get("item_id", ""))
                     details_map[iid] = item.get("warehouse_details", [])
-        except Exception:
-            pass
-    return details_map
+        except Exception as e:
+            if i == 0:
+                raw_debug = {"error": str(e)}
+    return details_map, raw_debug
 
 
 def build_dataframe(items, details_map=None):
@@ -296,20 +307,20 @@ with st.sidebar:
             else:
                 item_ids = [str(i.get("item_id", "")) for i in items if i.get("item_id")]
                 with st.spinner(f"Loading warehouse details ({len(item_ids)} items)..."):
-                    details_map = fetch_warehouse_details(token, org_id, item_ids)
+                    details_map, wh_debug = fetch_warehouse_details(token, org_id, item_ids)
                 df, warehouses = build_dataframe(items, details_map)
                 st.session_state.df = df
                 st.session_state.warehouses = warehouses
                 st.session_state.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 st.session_state.error = False
-                st.session_state.raw_sample = items[:2] if items else []
-                st.success(f"✅ {len(df)} items loaded!")
+                st.session_state.wh_debug = wh_debug
+                st.success(f"✅ {len(df)} items | {len(warehouses)} warehouses found")
 
-    # ── Debug: show raw API sample ──
-    if "raw_sample" in st.session_state and st.session_state.raw_sample:
-        with st.expander("🔍 Debug: Raw API Sample (first 2 items)"):
+    # ── Debug: show /itemdetails raw response ──
+    if "wh_debug" in st.session_state and st.session_state.wh_debug:
+        with st.expander("🔍 Debug: /itemdetails API Response"):
             import json
-            st.code(json.dumps(st.session_state.raw_sample, indent=2, ensure_ascii=False), language="json")
+            st.code(json.dumps(st.session_state.wh_debug, indent=2, ensure_ascii=False), language="json")
 
 
 # ─── Header ───────────────────────────────────────────────────────────────────
