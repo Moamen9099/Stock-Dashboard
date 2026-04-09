@@ -157,91 +157,77 @@ def fetch_all_items(token, org_id):
 
 
 def fetch_warehouse_details(token, org_id, item_ids):
-    """Fetch warehouse breakdown for items in batches of 100 using /itemdetails endpoint."""
+    """Fetch warehouse breakdown in batches of 200. Returns (details_map, wh_names)."""
     headers = {"Authorization": f"Zoho-oauthtoken {token}"}
-    details_map = {}
-    raw_debug = {}   # store first batch raw response for debugging
-    batch_size = 100
+    details_map = {}   # item_id -> {wh_name: {avail, committed}}
+    wh_names = set()
+    batch_size = 200   # increased batch size — fewer API calls
     for i in range(0, len(item_ids), batch_size):
         batch = item_ids[i:i + batch_size]
-        ids_str = ",".join(batch)
         try:
             r = requests.get(
                 "https://www.zohoapis.com/inventory/v1/itemdetails",
                 headers=headers,
-                params={"organization_id": org_id, "item_ids": ids_str},
+                params={"organization_id": org_id, "item_ids": ",".join(batch)},
                 timeout=30
             )
             d = r.json()
-            if i == 0:
-                # Save first batch response for debug (first 2 items only)
-                raw_debug = {
-                    "endpoint": "/inventory/v1/itemdetails",
-                    "http_status": r.status_code,
-                    "response_code": d.get("code"),
-                    "message": d.get("message", ""),
-                    "first_2_items": d.get("items", [])[:2]
-                }
             if d.get("code") == 0:
                 for item in d.get("items", []):
                     iid = str(item.get("item_id", ""))
-                    # Zoho /itemdetails uses "warehouses" key (not "warehouse_details")
-                    details_map[iid] = item.get("warehouses", [])
-        except Exception as e:
-            if i == 0:
-                raw_debug = {"error": str(e)}
-    return details_map, raw_debug
+                    wh_map = {}
+                    for wh in item.get("warehouses", []):
+                        name = wh.get("warehouse_name", "Unknown")
+                        wh_map[name] = {
+                            "avail":     wh.get("warehouse_actual_available_stock", 0) or 0,
+                            "committed": wh.get("warehouse_actual_committed_stock", 0) or 0,
+                        }
+                        wh_names.add(name)
+                    details_map[iid] = wh_map
+        except Exception:
+            pass
+    return details_map, sorted(wh_names)
 
 
-def build_dataframe(items, details_map=None):
-    rows = []
-    warehouse_names = set()
+def build_dataframe(items, details_map=None, wh_names=None):
+    """Build lean core dataframe — NO per-warehouse columns (those stay in details_map)."""
     if details_map is None:
         details_map = {}
+    rows = []
 
     for item in items:
         item_id = str(item.get("item_id", ""))
-        wh_stocks = {}
+        wh_map  = details_map.get(item_id, {})
 
-        # Use detailed warehouse data if available
-        wh_list = details_map.get(item_id, item.get("warehouse_details", []))
-        for wh in wh_list:
-            name = wh.get("warehouse_name", "Unknown")
-            available = wh.get("warehouse_actual_available_stock", 0) or 0
-            committed = wh.get("warehouse_committed_stock", 0) or 0
-            wh_stocks[f"{name} — Available"] = available
-            wh_stocks[f"{name} — Committed"] = committed
-            warehouse_names.add(name)
-
-        total = item.get("actual_available_stock", 0) or 0
-        total_committed = item.get("committed_stock", 0) or 0
-        reorder = item.get("reorder_level", 0) or 0
+        total     = item.get("actual_available_stock", 0) or 0
+        # Sum actual_committed from warehouse data (more accurate than /items field)
+        committed = sum(v["committed"] for v in wh_map.values()) if wh_map else (item.get("committed_stock", 0) or 0)
+        reorder   = safe_int(item.get("reorder_level", 0))
 
         if total == 0:
             status = "out"
-        elif total <= reorder:
+        elif reorder and total <= reorder:
             status = "critical"
-        elif total <= reorder * 1.5:
+        elif reorder and total <= reorder * 1.5:
             status = "low"
         else:
             status = "ok"
 
         rows.append({
-            "item_id": item_id,
-            "SKU": item.get("sku", "—"),
-            "Name": item.get("name", ""),
-            "Brand": item.get("brand", "—") or "—",
-            "Category": item.get("category_name", "—") or "—",
-            "Total Stock": total,
-            "Total Committed": total_committed,
-            "Reorder Point": reorder,
-            "Unit": item.get("unit", ""),
-            "Status": status,
-            **wh_stocks
+            "item_id":        item_id,
+            "SKU":            item.get("sku", "—") or "—",
+            "Name":           item.get("name", ""),
+            "Brand":          item.get("brand", "—") or "—",
+            "Category":       item.get("category_name", "—") or "—",
+            "Total Stock":    total,
+            "Committed":      committed,
+            "Reorder Point":  reorder,
+            "Unit":           item.get("unit", ""),
+            "Status":         status,
         })
 
     df = pd.DataFrame(rows)
-    return df, sorted(warehouse_names)
+    return df
 
 
 
@@ -264,27 +250,24 @@ def load_inventory(client_id, client_secret, refresh_token, org_id):
     """Full fetch: token → items → warehouse details → dataframe. Cached 30 min."""
     token, err = get_access_token(client_id, client_secret, refresh_token)
     if err or not token:
-        return None, [], f"Token error: {err}"
+        return None, {}, [], f"Token error: {err}"
 
     items, err = fetch_all_items(token, org_id)
     if err:
-        return None, [], f"API error: {err}"
+        return None, {}, [], f"API error: {err}"
 
     item_ids = [str(i.get("item_id", "")) for i in items if i.get("item_id")]
-    details_map, _ = fetch_warehouse_details(token, org_id, item_ids)
-    df, warehouses = build_dataframe(items, details_map)
-    return df, warehouses, None
+    details_map, wh_names = fetch_warehouse_details(token, org_id, item_ids)
+    df = build_dataframe(items, details_map, wh_names)
+    return df, details_map, wh_names, None
 
 
 # ─── Session State ─────────────────────────────────────────────────────────────
-if "df" not in st.session_state:
-    st.session_state.df = None
-if "warehouses" not in st.session_state:
-    st.session_state.warehouses = []
-if "last_updated" not in st.session_state:
-    st.session_state.last_updated = None
-if "error" not in st.session_state:
-    st.session_state.error = False
+if "df" not in st.session_state:           st.session_state.df = None
+if "details_map" not in st.session_state:  st.session_state.details_map = {}
+if "warehouses" not in st.session_state:   st.session_state.warehouses = []
+if "last_updated" not in st.session_state: st.session_state.last_updated = None
+if "error" not in st.session_state:        st.session_state.error = False
 
 
 # ─── Credentials from Streamlit Secrets ──────────────────────────────────────
@@ -300,20 +283,25 @@ except:
     secrets_loaded = False
 
 
+def apply_loaded(df, details_map, wh_names):
+    st.session_state.df = df
+    st.session_state.details_map = details_map
+    st.session_state.warehouses = wh_names
+    st.session_state.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state.error = False
+
+
 # ─── Auto-fetch when secrets are present and no data yet ─────────────────────
 if secrets_loaded and st.session_state.df is None:
     with st.spinner("⏳ Loading inventory data..."):
-        df_loaded, wh_loaded, err = load_inventory(
+        df_l, dm_l, wh_l, err = load_inventory(
             default_client_id, default_client_secret,
             default_refresh_token, default_org_id
         )
     if err:
         st.session_state.error = True
     else:
-        st.session_state.df = df_loaded
-        st.session_state.warehouses = wh_loaded
-        st.session_state.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        st.session_state.error = False
+        apply_loaded(df_l, dm_l, wh_l)
 
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
@@ -334,20 +322,17 @@ with st.sidebar:
 
     st.markdown("---")
     if st.button("🔄 Refresh Data", use_container_width=True):
-        load_inventory.clear()   # clear cache to force re-fetch
+        load_inventory.clear()
         with st.spinner("Refreshing..."):
-            df_loaded, wh_loaded, err = load_inventory(
+            df_l, dm_l, wh_l, err = load_inventory(
                 client_id, client_secret, refresh_token, org_id
             )
         if err:
             st.error(err)
             st.session_state.error = True
         else:
-            st.session_state.df = df_loaded
-            st.session_state.warehouses = wh_loaded
-            st.session_state.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            st.session_state.error = False
-            st.success(f"✅ {len(df_loaded):,} items | {len(wh_loaded)} warehouses")
+            apply_loaded(df_l, dm_l, wh_l)
+            st.success(f"✅ {len(df_l):,} items | {len(wh_l)} warehouses")
 
     if st.session_state.last_updated:
         st.markdown(f"<div style='font-size:0.75rem; color:#475569; margin-top:8px;'>🕐 Next auto-refresh in ~30 min</div>", unsafe_allow_html=True)
@@ -394,7 +379,6 @@ if df_all is None:
 
 # ─── Filters ──────────────────────────────────────────────────────────────────
 col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 2, 1.5])
-
 with col1:
     search = st.text_input("", placeholder="🔍 Search by name or SKU...", label_visibility="collapsed")
 with col2:
@@ -412,7 +396,6 @@ with col5:
 
 # ─── Filter Logic ─────────────────────────────────────────────────────────────
 df = df_all.copy()
-
 if search:
     df = df[df["Name"].str.contains(search, case=False, na=False) |
             df["SKU"].astype(str).str.contains(search, case=False, na=False)]
@@ -420,46 +403,45 @@ if selected_brand != "All Brands":
     df = df[df["Brand"] == selected_brand]
 if selected_cat != "All Categories":
     df = df[df["Category"] == selected_cat]
+
+# Filter by warehouse: keep only items that have stock in selected warehouse
+details_map = st.session_state.details_map
 if selected_wh != "All Warehouses":
-    avail_col = f"{selected_wh} — Available"
-    if avail_col in df.columns:
-        df = df[df[avail_col] > 0]
+    def has_wh_stock(item_id):
+        return details_map.get(item_id, {}).get(selected_wh, {}).get("avail", 0) > 0
+    df = df[df["item_id"].apply(has_wh_stock)]
 
 
 # ─── Stats Cards (reactive to filters) ────────────────────────────────────────
-total_items = len(df)
-total_brands = df["Brand"].nunique()
-low_stock = len(df[df["Status"] == "low"])
-critical = len(df[df["Status"].isin(["critical", "out"])])
-out_of_stock = len(df[df["Status"] == "out"])
-total_stock_value = safe_int(df["Total Stock"].sum())
-total_committed_value = safe_int(df["Total Committed"].sum()) if "Total Committed" in df.columns else 0
+total_items   = len(df)
+total_brands  = df["Brand"].nunique()
+low_stock     = len(df[df["Status"] == "low"])
+critical      = len(df[df["Status"].isin(["critical", "out"])])
+out_of_stock  = len(df[df["Status"] == "out"])
+total_stock   = safe_int(df["Total Stock"].sum())
+total_commit  = safe_int(df["Committed"].sum())
 
 filter_label = ""
-if selected_wh != "All Warehouses":
-    filter_label = f" · {selected_wh}"
-elif selected_brand != "All Brands":
-    filter_label = f" · {selected_brand}"
-elif selected_cat != "All Categories":
-    filter_label = f" · {selected_cat}"
-elif search:
-    filter_label = f" · \"{search}\""
+if selected_wh != "All Warehouses":       filter_label = f" · {selected_wh}"
+elif selected_brand != "All Brands":      filter_label = f" · {selected_brand}"
+elif selected_cat != "All Categories":    filter_label = f" · {selected_cat}"
+elif search:                              filter_label = f" · \"{search}\""
 
 st.markdown(f"""
 <div class="stat-grid">
     <div class="stat-card">
-        <div class="stat-label">Filtered Items{filter_label}</div>
+        <div class="stat-label">Items{filter_label}</div>
         <div class="stat-value">{total_items:,}</div>
         <div class="stat-sub">{total_brands} brands · {len(df_all):,} total</div>
     </div>
     <div class="stat-card success">
-        <div class="stat-label">Units Available</div>
-        <div class="stat-value">{total_stock_value:,}</div>
-        <div class="stat-sub">in filtered selection</div>
+        <div class="stat-label">Available Units</div>
+        <div class="stat-value">{total_stock:,}</div>
+        <div class="stat-sub">actual available stock</div>
     </div>
     <div class="stat-card warning">
         <div class="stat-label">Committed</div>
-        <div class="stat-value">{total_committed_value:,}</div>
+        <div class="stat-value">{total_commit:,}</div>
         <div class="stat-sub">reserved / pending orders</div>
     </div>
     <div class="stat-card danger">
@@ -470,26 +452,30 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ─── Warehouse Summary Cards (reactive to filters) ────────────────────────────
+
+# ─── Warehouse Summary Cards (from details_map, reactive to filters) ──────────
 if st.session_state.warehouses:
-    wh_cards_html = "<div style='display:flex; gap:12px; flex-wrap:wrap; margin-bottom:24px;'>"
     show_warehouses = [selected_wh] if selected_wh != "All Warehouses" else st.session_state.warehouses
+    filtered_ids = set(df["item_id"].tolist())
+    wh_cards_html = "<div style='display:flex; gap:10px; flex-wrap:wrap; margin-bottom:24px;'>"
     for wh in show_warehouses:
-        avail_col = f"{wh} — Available"
-        comm_col  = f"{wh} — Committed"
-        avail_total = safe_int(df[avail_col].sum()) if avail_col in df.columns else 0
-        comm_total  = safe_int(df[comm_col].sum())  if comm_col  in df.columns else 0
+        avail_total = 0
+        comm_total  = 0
+        for iid in filtered_ids:
+            wh_data = details_map.get(iid, {}).get(wh, {})
+            avail_total += wh_data.get("avail", 0)
+            comm_total  += wh_data.get("committed", 0)
         wh_cards_html += f"""
-        <div style="background:#1e293b; border:1px solid #334155; border-radius:12px; padding:16px 20px; min-width:180px; flex:1;">
-            <div style="font-size:0.7rem; color:#94a3b8; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">🏭 {wh}</div>
-            <div style="display:flex; gap:20px; align-items:flex-end;">
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:14px 18px;min-width:160px;flex:1;">
+            <div style="font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">🏭 {wh}</div>
+            <div style="display:flex;gap:16px;align-items:flex-end;">
                 <div>
-                    <div style="font-size:1.5rem; font-weight:700; color:#22c55e;">{avail_total:,}</div>
-                    <div style="font-size:0.7rem; color:#64748b;">Available</div>
+                    <div style="font-size:1.4rem;font-weight:700;color:#22c55e;">{safe_int(avail_total):,}</div>
+                    <div style="font-size:0.65rem;color:#64748b;">Available</div>
                 </div>
                 <div>
-                    <div style="font-size:1.5rem; font-weight:700; color:#f59e0b;">{comm_total:,}</div>
-                    <div style="font-size:0.7rem; color:#64748b;">Committed</div>
+                    <div style="font-size:1.4rem;font-weight:700;color:#f59e0b;">{safe_int(comm_total):,}</div>
+                    <div style="font-size:0.65rem;color:#64748b;">Committed</div>
                 </div>
             </div>
         </div>"""
@@ -504,50 +490,36 @@ tab1, tab2, tab3 = st.tabs(["📋 Inventory Table", "📊 Stock Chart", alerts_l
 
 # ── Tab 1: Inventory Table ────────────────────────────────────────────────────
 with tab1:
-    st.markdown(f"<div style='color:#64748b; font-size:0.8rem; margin-bottom:8px;'>Showing {len(df):,} of {len(df_all):,} items</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='color:#64748b;font-size:0.8rem;margin-bottom:8px;'>Showing {len(df):,} of {len(df_all):,} items</div>", unsafe_allow_html=True)
 
-    # Build display columns
-    base_cols = ["SKU", "Name", "Brand", "Category", "Total Stock", "Total Committed", "Reorder Point", "Status"]
+    # Base columns always shown
+    base_cols = ["SKU", "Name", "Brand", "Category", "Total Stock", "Committed", "Reorder Point", "Status"]
 
-    # Warehouse columns — show selected or all
+    # If a specific warehouse is selected, add its Available + Committed inline
     if selected_wh != "All Warehouses":
-        avail_col = f"{selected_wh} — Available"
-        comm_col  = f"{selected_wh} — Committed"
-        wh_cols = [c for c in [avail_col, comm_col] if c in df.columns]
+        # Build a display df with the warehouse columns added on the fly
+        show_df = df[base_cols].copy()
+        show_df.insert(4, f"{selected_wh} Avail",
+            df["item_id"].map(lambda i: safe_int(details_map.get(i, {}).get(selected_wh, {}).get("avail", 0))))
+        show_df.insert(5, f"{selected_wh} Comm",
+            df["item_id"].map(lambda i: safe_int(details_map.get(i, {}).get(selected_wh, {}).get("committed", 0))))
     else:
-        wh_cols = []
-        for wh in st.session_state.warehouses:
-            for suffix in ["— Available", "— Committed"]:
-                col = f"{wh} {suffix}"
-                if col in df.columns:
-                    wh_cols.append(col)
+        show_df = df[base_cols].copy()
 
-    display_cols = base_cols + wh_cols
-
-    # Highlight rows
     def highlight_row(row):
-        if row["Status"] == "out":
-            return ["background-color: rgba(127,29,29,0.3)"] * len(row)
-        elif row["Status"] == "critical":
-            return ["background-color: rgba(127,29,29,0.15)"] * len(row)
-        elif row["Status"] == "low":
-            return ["background-color: rgba(113,63,18,0.2)"] * len(row)
+        s = row.get("Status", "")
+        if s == "out":      return ["background-color:rgba(127,29,29,0.3)"]  * len(row)
+        if s == "critical": return ["background-color:rgba(127,29,29,0.15)"] * len(row)
+        if s == "low":      return ["background-color:rgba(113,63,18,0.2)"]  * len(row)
         return [""] * len(row)
 
-    show_df = df[[c for c in display_cols if c in df.columns]].copy()
     styled = show_df.style.apply(highlight_row, axis=1)
-
     st.dataframe(styled, use_container_width=True, height=520)
 
-    # Export
     if export_btn:
-        csv = df[[c for c in display_cols if c in df.columns]].to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "📥 Download CSV",
-            data=csv,
-            file_name=f"inventory_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv"
-        )
+        csv = show_df.to_csv(index=False).encode("utf-8")
+        st.download_button("📥 Download CSV", data=csv,
+            file_name=f"inventory_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", mime="text/csv")
 
 
 # ── Tab 2: Stock Chart ────────────────────────────────────────────────────────
@@ -556,7 +528,7 @@ with tab2:
 
     with col_a:
         st.markdown("#### Stock Status Distribution")
-        status_counts = df_all["Status"].value_counts().reset_index()
+        status_counts = df["Status"].value_counts().reset_index()
         status_counts.columns = ["Status", "Count"]
         status_map = {"ok": "In Stock", "low": "Low", "critical": "Critical", "out": "Out of Stock"}
         status_counts["Status"] = status_counts["Status"].map(status_map)
@@ -568,71 +540,67 @@ with tab2:
         top_items["Name"] = top_items["Name"].str[:30]
         st.bar_chart(top_items.set_index("Name"), use_container_width=True, color="#22c55e")
 
-    # Warehouse breakdown
+    # Warehouse breakdown from details_map
     if st.session_state.warehouses:
-        st.markdown("#### Stock by Warehouse")
-        wh_data = {}
+        st.markdown("#### Available Stock by Warehouse")
+        filtered_ids = set(df["item_id"].tolist())
+        wh_rows = []
         for wh in st.session_state.warehouses:
-            if wh in df_all.columns:
-                wh_data[wh] = df_all[wh].sum()
-        if wh_data:
-            wh_df = pd.DataFrame(list(wh_data.items()), columns=["Warehouse", "Total Stock"])
-            st.bar_chart(wh_df.set_index("Warehouse"), use_container_width=True, color="#8b5cf6")
+            avail = sum(details_map.get(iid, {}).get(wh, {}).get("avail", 0) for iid in filtered_ids)
+            comm  = sum(details_map.get(iid, {}).get(wh, {}).get("committed", 0) for iid in filtered_ids)
+            wh_rows.append({"Warehouse": wh, "Available": safe_int(avail), "Committed": safe_int(comm)})
+        wh_df = pd.DataFrame(wh_rows).set_index("Warehouse")
+        st.bar_chart(wh_df, use_container_width=True)
 
 
 # ── Tab 3: Alerts ─────────────────────────────────────────────────────────────
 with tab3:
-    out_items = df_all[df_all["Status"] == "out"]
-    crit_items = df_all[df_all["Status"] == "critical"]
-    low_items = df_all[df_all["Status"] == "low"]
+    out_items  = df[df["Status"] == "out"]
+    crit_items = df[df["Status"] == "critical"]
+    low_items  = df[df["Status"] == "low"]
 
     if len(out_items) == 0 and len(crit_items) == 0 and len(low_items) == 0:
-        st.markdown("<div style='text-align:center; padding:40px; color:#64748b;'>✅ All items are well-stocked!</div>", unsafe_allow_html=True)
+        st.markdown("<div style='text-align:center;padding:40px;color:#64748b;'>✅ All items are well-stocked!</div>", unsafe_allow_html=True)
     else:
+        def wh_line(item_id):
+            wh_map = details_map.get(item_id, {})
+            if not wh_map:
+                return ""
+            parts = [
+                f"{wh}: <b>{safe_int(v['avail'])}</b> avail / <b>{safe_int(v['committed'])}</b> comm"
+                for wh, v in wh_map.items() if v.get("avail", 0) > 0 or v.get("committed", 0) > 0
+            ]
+            return " &nbsp;|&nbsp; ".join(parts)
+
         if len(out_items) > 0:
             st.markdown(f"##### 🔴 Out of Stock ({len(out_items)} items)")
             for _, row in out_items.iterrows():
-                wh_details = " · ".join(
-                    f"{wh}: Avail <b>0</b> / Comm <b>{safe_int(row.get(f'{wh} — Committed'))}</b>"
-                    for wh in st.session_state.warehouses
-                    if f"{wh} — Available" in row.index
-                )
+                whl = wh_line(row["item_id"])
                 st.markdown(f"""
                 <div class="alert-card">
                     <div class="alert-title">{row['Name']}</div>
-                    <div class="alert-sub">SKU: {row['SKU']} · Brand: {row['Brand']} · Reorder Point: {safe_int(row['Reorder Point'])}</div>
-                    {f'<div class="alert-sub" style="margin-top:4px;">{wh_details}</div>' if wh_details else ''}
-                </div>
-                """, unsafe_allow_html=True)
+                    <div class="alert-sub">SKU: {row['SKU']} · Brand: {row['Brand']} · Reorder: {safe_int(row['Reorder Point'])}</div>
+                    {f'<div class="alert-sub" style="margin-top:4px;font-size:0.75rem;">{whl}</div>' if whl else ''}
+                </div>""", unsafe_allow_html=True)
 
         if len(crit_items) > 0:
             st.markdown(f"##### 🟠 Critical Stock ({len(crit_items)} items)")
             for _, row in crit_items.iterrows():
-                wh_details = " · ".join(
-                    f"{wh}: Avail <b>{safe_int(row.get(f'{wh} — Available'))}</b> / Comm <b>{safe_int(row.get(f'{wh} — Committed'))}</b>"
-                    for wh in st.session_state.warehouses
-                    if f"{wh} — Available" in row.index
-                )
+                whl = wh_line(row["item_id"])
                 st.markdown(f"""
                 <div class="alert-card warning">
                     <div class="alert-title">{row['Name']}</div>
-                    <div class="alert-sub">SKU: {row['SKU']} · Brand: {row['Brand']} · Total Stock: {safe_int(row['Total Stock'])} · Reorder Point: {safe_int(row['Reorder Point'])}</div>
-                    {f'<div class="alert-sub" style="margin-top:4px;">{wh_details}</div>' if wh_details else ''}
-                </div>
-                """, unsafe_allow_html=True)
+                    <div class="alert-sub">SKU: {row['SKU']} · Stock: {safe_int(row['Total Stock'])} · Committed: {safe_int(row['Committed'])} · Reorder: {safe_int(row['Reorder Point'])}</div>
+                    {f'<div class="alert-sub" style="margin-top:4px;font-size:0.75rem;">{whl}</div>' if whl else ''}
+                </div>""", unsafe_allow_html=True)
 
         if len(low_items) > 0:
             st.markdown(f"##### 🟡 Low Stock ({len(low_items)} items)")
             for _, row in low_items.iterrows():
-                wh_details = " · ".join(
-                    f"{wh}: Avail <b>{safe_int(row.get(f'{wh} — Available'))}</b> / Comm <b>{safe_int(row.get(f'{wh} — Committed'))}</b>"
-                    for wh in st.session_state.warehouses
-                    if f"{wh} — Available" in row.index
-                )
+                whl = wh_line(row["item_id"])
                 st.markdown(f"""
                 <div class="alert-card warning">
                     <div class="alert-title">{row['Name']}</div>
-                    <div class="alert-sub">SKU: {row['SKU']} · Brand: {row['Brand']} · Total Stock: {safe_int(row['Total Stock'])} · Reorder Point: {safe_int(row['Reorder Point'])}</div>
-                    {f'<div class="alert-sub" style="margin-top:4px;">{wh_details}</div>' if wh_details else ''}
-                </div>
-                """, unsafe_allow_html=True)
+                    <div class="alert-sub">SKU: {row['SKU']} · Stock: {safe_int(row['Total Stock'])} · Committed: {safe_int(row['Committed'])} · Reorder: {safe_int(row['Reorder Point'])}</div>
+                    {f'<div class="alert-sub" style="margin-top:4px;font-size:0.75rem;">{whl}</div>' if whl else ''}
+                </div>""", unsafe_allow_html=True)
