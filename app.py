@@ -248,14 +248,32 @@ def build_dataframe(items, details_map=None):
 def safe_int(val, default=0):
     try:
         v = float(val)
-        return int(v) if v == v else default  # NaN check
+        return int(v) if v == v else default
     except (TypeError, ValueError):
         return default
 
 
+def status_badge(status):
     labels = {"ok": ("ok", "In Stock"), "low": ("low", "Low"), "critical": ("critical", "Critical"), "out": ("out", "Out")}
     cls, text = labels.get(status, ("ok", status))
     return f'<span class="badge badge-{cls}">{text}</span>'
+
+
+@st.cache_data(ttl=1800, show_spinner=False)  # cache 30 minutes
+def load_inventory(client_id, client_secret, refresh_token, org_id):
+    """Full fetch: token → items → warehouse details → dataframe. Cached 30 min."""
+    token, err = get_access_token(client_id, client_secret, refresh_token)
+    if err or not token:
+        return None, [], f"Token error: {err}"
+
+    items, err = fetch_all_items(token, org_id)
+    if err:
+        return None, [], f"API error: {err}"
+
+    item_ids = [str(i.get("item_id", "")) for i in items if i.get("item_id")]
+    details_map, _ = fetch_warehouse_details(token, org_id, item_ids)
+    df, warehouses = build_dataframe(items, details_map)
+    return df, warehouses, None
 
 
 # ─── Session State ─────────────────────────────────────────────────────────────
@@ -269,19 +287,33 @@ if "error" not in st.session_state:
     st.session_state.error = False
 
 
-# ─── Credentials from Streamlit Secrets (if available) ───────────────────────
+# ─── Credentials from Streamlit Secrets ──────────────────────────────────────
 try:
-    default_client_id = st.secrets["CLIENT_ID"]
+    default_client_id     = st.secrets["CLIENT_ID"]
     default_client_secret = st.secrets["CLIENT_SECRET"]
     default_refresh_token = st.secrets["REFRESH_TOKEN"]
-    default_org_id = st.secrets["ORG_ID"]
+    default_org_id        = st.secrets["ORG_ID"]
     secrets_loaded = True
 except:
-    default_client_id = ""
-    default_client_secret = ""
-    default_refresh_token = ""
+    default_client_id = default_client_secret = default_refresh_token = ""
     default_org_id = "771975372"
     secrets_loaded = False
+
+
+# ─── Auto-fetch when secrets are present and no data yet ─────────────────────
+if secrets_loaded and st.session_state.df is None:
+    with st.spinner("⏳ Loading inventory data..."):
+        df_loaded, wh_loaded, err = load_inventory(
+            default_client_id, default_client_secret,
+            default_refresh_token, default_org_id
+        )
+    if err:
+        st.session_state.error = True
+    else:
+        st.session_state.df = df_loaded
+        st.session_state.warehouses = wh_loaded
+        st.session_state.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        st.session_state.error = False
 
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
@@ -289,47 +321,36 @@ with st.sidebar:
     st.markdown("### ⚙️ Settings")
     if secrets_loaded:
         st.success("✅ Credentials loaded from Secrets")
-        client_id = default_client_id
+        client_id     = default_client_id
         client_secret = default_client_secret
         refresh_token = default_refresh_token
-        org_id = default_org_id
+        org_id        = default_org_id
     else:
         st.info("Enter your Zoho credentials")
-        client_id = st.text_input("Client ID", type="password")
+        client_id     = st.text_input("Client ID", type="password")
         client_secret = st.text_input("Client Secret", type="password")
         refresh_token = st.text_input("Refresh Token", type="password")
-        org_id = st.text_input("Organization ID", value="771975372")
+        org_id        = st.text_input("Organization ID", value="771975372")
 
     st.markdown("---")
-    if st.button("🔄 Fetch / Refresh Data", use_container_width=True):
-        with st.spinner("Connecting to Zoho..."):
-            token, err = get_access_token(client_id, client_secret, refresh_token)
-        if err or not token:
-            st.error(f"Token error: {err}")
+    if st.button("🔄 Refresh Data", use_container_width=True):
+        load_inventory.clear()   # clear cache to force re-fetch
+        with st.spinner("Refreshing..."):
+            df_loaded, wh_loaded, err = load_inventory(
+                client_id, client_secret, refresh_token, org_id
+            )
+        if err:
+            st.error(err)
             st.session_state.error = True
         else:
-            with st.spinner("Loading inventory..."):
-                items, err = fetch_all_items(token, org_id)
-            if err:
-                st.error(f"API error: {err}")
-                st.session_state.error = True
-            else:
-                item_ids = [str(i.get("item_id", "")) for i in items if i.get("item_id")]
-                with st.spinner(f"Loading warehouse details ({len(item_ids)} items)..."):
-                    details_map, wh_debug = fetch_warehouse_details(token, org_id, item_ids)
-                df, warehouses = build_dataframe(items, details_map)
-                st.session_state.df = df
-                st.session_state.warehouses = warehouses
-                st.session_state.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                st.session_state.error = False
-                st.session_state.wh_debug = wh_debug
-                st.success(f"✅ {len(df)} items | {len(warehouses)} warehouses found")
+            st.session_state.df = df_loaded
+            st.session_state.warehouses = wh_loaded
+            st.session_state.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st.session_state.error = False
+            st.success(f"✅ {len(df_loaded):,} items | {len(wh_loaded)} warehouses")
 
-    # ── Debug: show /itemdetails raw response ──
-    if "wh_debug" in st.session_state and st.session_state.wh_debug:
-        with st.expander("🔍 Debug: /itemdetails API Response"):
-            import json
-            st.code(json.dumps(st.session_state.wh_debug, indent=2, ensure_ascii=False), language="json")
+    if st.session_state.last_updated:
+        st.markdown(f"<div style='font-size:0.75rem; color:#475569; margin-top:8px;'>🕐 Next auto-refresh in ~30 min</div>", unsafe_allow_html=True)
 
 
 # ─── Header ───────────────────────────────────────────────────────────────────
