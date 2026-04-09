@@ -156,13 +156,44 @@ def fetch_all_items(token, org_id):
     return all_items, None
 
 
-def build_dataframe(items):
+def fetch_warehouse_details(token, org_id, item_ids):
+    """Fetch warehouse breakdown for items in batches of 100 using /itemdetails endpoint."""
+    headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+    details_map = {}  # item_id -> warehouse_details list
+    batch_size = 100
+    for i in range(0, len(item_ids), batch_size):
+        batch = item_ids[i:i + batch_size]
+        ids_str = ",".join(batch)
+        try:
+            r = requests.get(
+                "https://www.zohoapis.com/inventory/v1/itemdetails",
+                headers=headers,
+                params={"organization_id": org_id, "item_ids": ids_str},
+                timeout=30
+            )
+            d = r.json()
+            if d.get("code") == 0:
+                for item in d.get("items", []):
+                    iid = str(item.get("item_id", ""))
+                    details_map[iid] = item.get("warehouse_details", [])
+        except Exception:
+            pass
+    return details_map
+
+
+def build_dataframe(items, details_map=None):
     rows = []
     warehouse_names = set()
+    if details_map is None:
+        details_map = {}
 
     for item in items:
+        item_id = str(item.get("item_id", ""))
         wh_stocks = {}
-        for wh in item.get("warehouse_details", []):
+
+        # Use detailed warehouse data if available
+        wh_list = details_map.get(item_id, item.get("warehouse_details", []))
+        for wh in wh_list:
             name = wh.get("warehouse_name", "Unknown")
             available = wh.get("warehouse_actual_available_stock", 0) or 0
             committed = wh.get("warehouse_committed_stock", 0) or 0
@@ -184,7 +215,7 @@ def build_dataframe(items):
             status = "ok"
 
         rows.append({
-            "item_id": item.get("item_id", ""),
+            "item_id": item_id,
             "SKU": item.get("sku", "—"),
             "Name": item.get("name", ""),
             "Brand": item.get("brand", "—") or "—",
@@ -263,7 +294,10 @@ with st.sidebar:
                 st.error(f"API error: {err}")
                 st.session_state.error = True
             else:
-                df, warehouses = build_dataframe(items)
+                item_ids = [str(i.get("item_id", "")) for i in items if i.get("item_id")]
+                with st.spinner(f"Loading warehouse details ({len(item_ids)} items)..."):
+                    details_map = fetch_warehouse_details(token, org_id, item_ids)
+                df, warehouses = build_dataframe(items, details_map)
                 st.session_state.df = df
                 st.session_state.warehouses = warehouses
                 st.session_state.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
