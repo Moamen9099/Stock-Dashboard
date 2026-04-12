@@ -2,132 +2,147 @@ import streamlit as st
 import requests
 import pandas as pd
 from datetime import datetime
+import base64
 
 st.set_page_config(
-    page_title="Inventory Management — Peta Stock",
+    page_title="Inventory Management — Peta Networks",
     page_icon="📦",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
+# ─── Dark / Light mode toggle ─────────────────────────────────────────────────
+if "dark_mode" not in st.session_state:
+    st.session_state.dark_mode = True
+
+# ─── Theme variables ──────────────────────────────────────────────────────────
+def get_theme():
+    if st.session_state.dark_mode:
+        return {
+            "bg":        "#0f172a",
+            "surface":   "#1e293b",
+            "border":    "#334155",
+            "text":      "#f1f5f9",
+            "muted":     "#94a3b8",
+            "dimmed":    "#64748b",
+            "sidebar_bg":"#0f172a",
+        }
+    else:
+        return {
+            "bg":        "#f8fafc",
+            "surface":   "#ffffff",
+            "border":    "#e2e8f0",
+            "text":      "#0f172a",
+            "muted":     "#64748b",
+            "dimmed":    "#94a3b8",
+            "sidebar_bg":"#f1f5f9",
+        }
+
+T = get_theme()
+
 # ─── CSS ──────────────────────────────────────────────────────────────────────
-st.markdown("""
+st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+html, body, [class*="css"] {{ font-family: 'Inter', sans-serif; }}
+.stApp {{ background: {T["bg"]}; color: {T["text"]}; }}
 
-html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-
-.stApp { background: #0f172a; color: #f1f5f9; }
-
-/* Header */
-.dash-header {
-    background: rgba(15,23,42,0.95);
+.dash-header {{
+    background: {T["surface"]};
+    border: 1px solid {T["border"]};
     backdrop-filter: blur(12px);
-    border-bottom: 1px solid #1e293b;
-    padding: 16px 24px;
+    padding: 14px 20px;
     border-radius: 12px;
-    margin-bottom: 24px;
+    margin-bottom: 20px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-}
-.dash-title { font-size: 1.25rem; font-weight: 700; color: #f1f5f9; }
-.dash-sub { font-size: 0.75rem; color: #64748b; margin-top: 2px; }
+}}
+.dash-title {{ font-size: 1.1rem; font-weight: 700; color: {T["text"]}; }}
+.dash-sub {{ font-size: 0.72rem; color: {T["dimmed"]}; margin-top: 2px; }}
 
-/* Stat Cards */
-.stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
-.stat-card {
-    background: #1e293b;
-    border: 1px solid #334155;
+.stat-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }}
+.stat-card {{
+    background: {T["surface"]};
+    border: 1px solid {T["border"]};
     border-radius: 12px;
-    padding: 20px;
-}
-.stat-label { font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
-.stat-value { font-size: 2rem; font-weight: 700; color: #f1f5f9; }
-.stat-sub { font-size: 0.75rem; color: #64748b; margin-top: 4px; }
-.stat-card.warning .stat-value { color: #f59e0b; }
-.stat-card.danger .stat-value { color: #ef4444; }
-.stat-card.success .stat-value { color: #22c55e; }
+    padding: 18px;
+}}
+.stat-label {{ font-size: 0.72rem; color: {T["muted"]}; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }}
+.stat-value {{ font-size: 1.9rem; font-weight: 700; color: {T["text"]}; }}
+.stat-sub {{ font-size: 0.72rem; color: {T["dimmed"]}; margin-top: 4px; }}
+.stat-card.warning .stat-value {{ color: #f59e0b; }}
+.stat-card.danger  .stat-value {{ color: #ef4444; }}
+.stat-card.success .stat-value {{ color: #22c55e; }}
 
-/* Badges */
-.badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 0.7rem; font-weight: 600; }
-.badge-ok { background: #166534; color: #86efac; }
-.badge-low { background: #713f12; color: #fcd34d; }
-.badge-critical { background: #7f1d1d; color: #fca5a5; }
-.badge-out { background: #1e1b4b; color: #a5b4fc; }
+.badge {{ display:inline-block; padding:2px 8px; border-radius:20px; font-size:0.7rem; font-weight:600; }}
+.badge-ok       {{ background:#166534; color:#86efac; }}
+.badge-low      {{ background:#713f12; color:#fcd34d; }}
+.badge-critical {{ background:#7f1d1d; color:#fca5a5; }}
+.badge-out      {{ background:#1e1b4b; color:#a5b4fc; }}
 
-/* Alert card */
-.alert-card {
-    background: #1e293b;
+.alert-card {{
+    background: {T["surface"]};
     border-left: 4px solid #ef4444;
     border-radius: 8px;
-    padding: 14px 18px;
-    margin-bottom: 10px;
-}
-.alert-card.warning { border-left-color: #f59e0b; }
-.alert-title { font-weight: 600; font-size: 0.9rem; color: #f1f5f9; }
-.alert-sub { font-size: 0.8rem; color: #94a3b8; margin-top: 4px; }
+    padding: 12px 16px;
+    margin-bottom: 8px;
+}}
+.alert-card.warning {{ border-left-color: #f59e0b; }}
+.alert-title {{ font-weight:600; font-size:0.88rem; color:{T["text"]}; }}
+.alert-sub {{ font-size:0.78rem; color:{T["muted"]}; margin-top:3px; }}
 
-/* Warning banner */
-.warn-banner {
+.warn-banner {{
     background: rgba(245,158,11,0.1);
     border: 1px solid rgba(245,158,11,0.3);
     border-radius: 8px;
-    padding: 12px 16px;
-    font-size: 0.85rem;
+    padding: 10px 14px;
+    font-size: 0.83rem;
     color: #fcd34d;
-    margin-bottom: 16px;
-}
+    margin-bottom: 14px;
+}}
 
-/* Buttons */
-.stButton > button {
-    background: #1e293b !important;
-    color: #f1f5f9 !important;
-    border: 1px solid #334155 !important;
+.stButton > button {{
+    background: {T["surface"]} !important;
+    color: {T["text"]} !important;
+    border: 1px solid {T["border"]} !important;
     border-radius: 8px !important;
-    font-size: 0.85rem !important;
+    font-size: 0.83rem !important;
     font-weight: 500 !important;
-}
-.stButton > button:hover {
-    background: #334155 !important;
-    border-color: #475569 !important;
-}
+}}
+.stButton > button:hover {{
+    background: {T["border"]} !important;
+}}
 
-/* Selectbox & Input */
-.stSelectbox > div > div, .stTextInput > div > div > input {
-    background: #1e293b !important;
-    border-color: #334155 !important;
-    color: #f1f5f9 !important;
+.stSelectbox > div > div, .stTextInput > div > div > input {{
+    background: {T["surface"]} !important;
+    border-color: {T["border"]} !important;
+    color: {T["text"]} !important;
     border-radius: 8px !important;
-}
-.stSelectbox label, .stTextInput label { color: #94a3b8 !important; font-size: 0.8rem !important; }
+}}
+.stSelectbox label, .stTextInput label {{ color: {T["muted"]} !important; font-size: 0.78rem !important; }}
 
-div[data-testid="stDataFrame"] { border: 1px solid #334155; border-radius: 12px; overflow: hidden; }
+div[data-testid="stDataFrame"] {{ border: 1px solid {T["border"]}; border-radius: 12px; overflow: hidden; }}
 
-.stTabs [data-baseweb="tab-list"] { background: #1e293b; border-radius: 8px; padding: 4px; gap: 4px; }
-.stTabs [data-baseweb="tab"] { background: transparent; color: #94a3b8; border-radius: 6px; font-size: 0.85rem; }
-.stTabs [aria-selected="true"] { background: #0f172a !important; color: #f1f5f9 !important; }
+.stTabs [data-baseweb="tab-list"] {{ background: {T["surface"]}; border-radius: 8px; padding: 4px; gap: 4px; }}
+.stTabs [data-baseweb="tab"] {{ background: transparent; color: {T["muted"]}; border-radius: 6px; font-size: 0.83rem; }}
+.stTabs [aria-selected="true"] {{ background: {T["bg"]} !important; color: {T["text"]} !important; }}
 
-section[data-testid="stSidebar"] { background: #0f172a; border-right: 1px solid #1e293b; }
-
-/* Last updated */
-.last-updated { font-size: 0.75rem; color: #475569; text-align: right; margin-bottom: 8px; }
+section[data-testid="stSidebar"] {{ background: {T["sidebar_bg"]}; border-right: 1px solid {T["border"]}; }}
 </style>
 """, unsafe_allow_html=True)
 
 
-# ─── Zoho API ─────────────────────────────────────────────────────────────────
+# ─── Zoho API helpers ─────────────────────────────────────────────────────────
+
+LOGO_B64 = "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"
 
 def get_access_token(client_id, client_secret, refresh_token):
-    url = "https://accounts.zoho.com/oauth/v2/token"
-    params = {
-        "refresh_token": refresh_token,
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "grant_type": "refresh_token"
-    }
     try:
-        r = requests.post(url, params=params, timeout=15)
+        r = requests.post("https://accounts.zoho.com/oauth/v2/token", params={
+            "refresh_token": refresh_token, "client_id": client_id,
+            "client_secret": client_secret, "grant_type": "refresh_token"
+        }, timeout=15)
         d = r.json()
         return d.get("access_token"), d.get("error")
     except Exception as e:
@@ -136,20 +151,14 @@ def get_access_token(client_id, client_secret, refresh_token):
 
 def fetch_all_items(token, org_id):
     headers = {"Authorization": f"Zoho-oauthtoken {token}"}
-    all_items = []
-    page = 1
+    all_items, page = [], 1
     while True:
-        r = requests.get(
-            "https://www.zohoapis.com/inventory/v1/items",
-            headers=headers,
-            params={"organization_id": org_id, "page": page, "per_page": 200},
-            timeout=20
-        )
+        r = requests.get("https://www.zohoapis.com/inventory/v1/items", headers=headers,
+            params={"organization_id": org_id, "page": page, "per_page": 200}, timeout=20)
         d = r.json()
         if d.get("code") != 0:
             return None, d.get("message", "API Error")
-        items = d.get("items", [])
-        all_items.extend(items)
+        all_items.extend(d.get("items", []))
         if not d.get("page_context", {}).get("has_more_page", False):
             break
         page += 1
@@ -157,20 +166,13 @@ def fetch_all_items(token, org_id):
 
 
 def fetch_warehouse_details(token, org_id, item_ids):
-    """Fetch warehouse breakdown in batches of 200. Returns (details_map, wh_names)."""
     headers = {"Authorization": f"Zoho-oauthtoken {token}"}
-    details_map = {}   # item_id -> {wh_name: {avail, committed}}
-    wh_names = set()
-    batch_size = 200   # increased batch size — fewer API calls
-    for i in range(0, len(item_ids), batch_size):
-        batch = item_ids[i:i + batch_size]
+    details_map, wh_names = {}, set()
+    for i in range(0, len(item_ids), 200):
+        batch = item_ids[i:i+200]
         try:
-            r = requests.get(
-                "https://www.zohoapis.com/inventory/v1/itemdetails",
-                headers=headers,
-                params={"organization_id": org_id, "item_ids": ",".join(batch)},
-                timeout=30
-            )
+            r = requests.get("https://www.zohoapis.com/inventory/v1/itemdetails", headers=headers,
+                params={"organization_id": org_id, "item_ids": ",".join(batch)}, timeout=30)
             d = r.json()
             if d.get("code") == 0:
                 for item in d.get("items", []):
@@ -189,48 +191,6 @@ def fetch_warehouse_details(token, org_id, item_ids):
     return details_map, sorted(wh_names)
 
 
-def build_dataframe(items, details_map=None, wh_names=None):
-    """Build lean core dataframe — NO per-warehouse columns (those stay in details_map)."""
-    if details_map is None:
-        details_map = {}
-    rows = []
-
-    for item in items:
-        item_id = str(item.get("item_id", ""))
-        wh_map  = details_map.get(item_id, {})
-
-        total     = item.get("actual_available_stock", 0) or 0
-        # Sum actual_committed from warehouse data (more accurate than /items field)
-        committed = sum(v["committed"] for v in wh_map.values()) if wh_map else (item.get("committed_stock", 0) or 0)
-        reorder   = safe_int(item.get("reorder_level", 0))
-
-        if total == 0:
-            status = "out"
-        elif reorder and total <= reorder:
-            status = "critical"
-        elif reorder and total <= reorder * 1.5:
-            status = "low"
-        else:
-            status = "ok"
-
-        rows.append({
-            "item_id":        item_id,
-            "SKU":            item.get("sku", "—") or "—",
-            "Name":           item.get("name", ""),
-            "Brand":          item.get("brand", "—") or "—",
-            "Category":       item.get("category_name", "—") or "—",
-            "Total Stock":    total,
-            "Committed":      committed,
-            "Reorder Point":  reorder,
-            "Unit":           item.get("unit", ""),
-            "Status":         status,
-        })
-
-    df = pd.DataFrame(rows)
-    return df
-
-
-
 def safe_int(val, default=0):
     try:
         v = float(val)
@@ -239,38 +199,57 @@ def safe_int(val, default=0):
         return default
 
 
-def status_badge(status):
-    labels = {"ok": ("ok", "In Stock"), "low": ("low", "Low"), "critical": ("critical", "Critical"), "out": ("out", "Out")}
-    cls, text = labels.get(status, ("ok", status))
-    return f'<span class="badge badge-{cls}">{text}</span>'
+def build_dataframe(items, details_map=None):
+    if details_map is None:
+        details_map = {}
+    rows = []
+    for item in items:
+        item_id = str(item.get("item_id", ""))
+        wh_map  = details_map.get(item_id, {})
+        total     = item.get("actual_available_stock", 0) or 0
+        committed = sum(v["committed"] for v in wh_map.values()) if wh_map else (item.get("committed_stock", 0) or 0)
+        reorder   = safe_int(item.get("reorder_level", 0))
+        if total == 0:                              status = "out"
+        elif reorder and total <= reorder:          status = "critical"
+        elif reorder and total <= reorder * 1.5:   status = "low"
+        else:                                       status = "ok"
+        rows.append({
+            "item_id": item_id,
+            "SKU":           item.get("sku", "—") or "—",
+            "Name":          item.get("name", ""),
+            "Brand":         item.get("brand", "—") or "—",
+            "Category":      item.get("category_name", "—") or "—",
+            "Total Stock":   total,
+            "Committed":     committed,
+            "Reorder Point": reorder,
+            "Unit":          item.get("unit", ""),
+            "Status":        status,
+        })
+    return pd.DataFrame(rows)
 
 
-@st.cache_data(ttl=1800, show_spinner=False)  # cache 30 minutes
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_inventory(client_id, client_secret, refresh_token, org_id):
-    """Full fetch: token → items → warehouse details → dataframe. Cached 30 min."""
     token, err = get_access_token(client_id, client_secret, refresh_token)
     if err or not token:
         return None, {}, [], f"Token error: {err}"
-
     items, err = fetch_all_items(token, org_id)
     if err:
         return None, {}, [], f"API error: {err}"
-
     item_ids = [str(i.get("item_id", "")) for i in items if i.get("item_id")]
     details_map, wh_names = fetch_warehouse_details(token, org_id, item_ids)
-    df = build_dataframe(items, details_map, wh_names)
+    df = build_dataframe(items, details_map)
     return df, details_map, wh_names, None
 
 
 # ─── Session State ─────────────────────────────────────────────────────────────
-if "df" not in st.session_state:           st.session_state.df = None
-if "details_map" not in st.session_state:  st.session_state.details_map = {}
-if "warehouses" not in st.session_state:   st.session_state.warehouses = []
-if "last_updated" not in st.session_state: st.session_state.last_updated = None
-if "error" not in st.session_state:        st.session_state.error = False
+for key, default in [("df", None), ("details_map", {}), ("warehouses", []),
+                     ("last_updated", None), ("error", False)]:
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 
-# ─── Credentials from Streamlit Secrets ──────────────────────────────────────
+# ─── Credentials ──────────────────────────────────────────────────────────────
 try:
     default_client_id     = st.secrets["CLIENT_ID"]
     default_client_secret = st.secrets["CLIENT_SECRET"]
@@ -284,20 +263,18 @@ except:
 
 
 def apply_loaded(df, details_map, wh_names):
-    st.session_state.df = df
+    st.session_state.df         = df
     st.session_state.details_map = details_map
     st.session_state.warehouses = wh_names
     st.session_state.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.session_state.error = False
 
 
-# ─── Auto-fetch when secrets are present and no data yet ─────────────────────
+# ─── Auto-fetch ───────────────────────────────────────────────────────────────
 if secrets_loaded and st.session_state.df is None:
     with st.spinner("⏳ Loading inventory data..."):
         df_l, dm_l, wh_l, err = load_inventory(
-            default_client_id, default_client_secret,
-            default_refresh_token, default_org_id
-        )
+            default_client_id, default_client_secret, default_refresh_token, default_org_id)
     if err:
         st.session_state.error = True
     else:
@@ -306,6 +283,21 @@ if secrets_loaded and st.session_state.df is None:
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
+    # Logo in sidebar
+    st.markdown(
+        f'''<div style="text-align:center;padding:12px 0 4px;">
+        <img src="data:image/png;base64,{LOGO_B64}" style="max-width:160px;border-radius:8px;">
+        </div>''', unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # Dark mode toggle
+    mode_label = "☀️ Light Mode" if st.session_state.dark_mode else "🌙 Dark Mode"
+    if st.button(mode_label, use_container_width=True):
+        st.session_state.dark_mode = not st.session_state.dark_mode
+        st.rerun()
+
+    st.markdown("---")
     st.markdown("### ⚙️ Settings")
     if secrets_loaded:
         st.success("✅ Credentials loaded from Secrets")
@@ -324,18 +316,15 @@ with st.sidebar:
     if st.button("🔄 Refresh Data", use_container_width=True):
         load_inventory.clear()
         with st.spinner("Refreshing..."):
-            df_l, dm_l, wh_l, err = load_inventory(
-                client_id, client_secret, refresh_token, org_id
-            )
+            df_l, dm_l, wh_l, err = load_inventory(client_id, client_secret, refresh_token, org_id)
         if err:
             st.error(err)
             st.session_state.error = True
         else:
             apply_loaded(df_l, dm_l, wh_l)
             st.success(f"✅ {len(df_l):,} items | {len(wh_l)} warehouses")
-
     if st.session_state.last_updated:
-        st.markdown(f"<div style='font-size:0.75rem; color:#475569; margin-top:8px;'>🕐 Next auto-refresh in ~30 min</div>", unsafe_allow_html=True)
+        st.caption("🕐 Cache refreshes every 30 min")
 
 
 # ─── Header ───────────────────────────────────────────────────────────────────
@@ -347,38 +336,36 @@ if df_all is not None:
 
 st.markdown(f"""
 <div class="dash-header">
-    <div style="display:flex; align-items:center; gap:12px;">
-        <div style="background:#1e3a5f; padding:8px; border-radius:10px; font-size:1.4rem;">📦</div>
-        <div>
-            <div class="dash-title">Inventory Management</div>
-            <div class="dash-sub">Peta Stock — Dashboard</div>
-        </div>
+  <div style="display:flex;align-items:center;gap:14px;">
+    <img src="data:image/png;base64,{LOGO_B64}" style="height:40px;border-radius:6px;">
+    <div>
+      <div class="dash-title">Inventory Management</div>
+      <div class="dash-sub">Peta Networks — Stock Dashboard</div>
     </div>
-    <div style="display:flex; align-items:center; gap:8px;">
-        {"<span style='background:#7f1d1d; color:#fca5a5; padding:6px 14px; border-radius:8px; font-size:0.8rem; font-weight:600;'>🔔 " + str(critical_count) + " Critical</span>" if critical_count > 0 else ""}
-        {"<span style='color:#475569; font-size:0.75rem;'>Last sync: " + st.session_state.last_updated + "</span>" if st.session_state.last_updated else ""}
-    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;">
+    {"<span style='background:#7f1d1d;color:#fca5a5;padding:5px 12px;border-radius:8px;font-size:0.78rem;font-weight:600;'>🔔 " + str(critical_count) + " Critical</span>" if critical_count > 0 else ""}
+    {"<span style='color:" + T["dimmed"] + ";font-size:0.73rem;'>Last sync: " + st.session_state.last_updated + "</span>" if st.session_state.last_updated else ""}
+  </div>
 </div>
 """, unsafe_allow_html=True)
 
-# ─── Error Banner ─────────────────────────────────────────────────────────────
 if st.session_state.error:
-    st.markdown('<div class="warn-banner">⚠️ Could not connect to Zoho API — please check your credentials and try again.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="warn-banner">⚠️ Could not connect to Zoho API — check credentials and try again.</div>', unsafe_allow_html=True)
 
-# ─── Empty State ──────────────────────────────────────────────────────────────
 if df_all is None:
     st.markdown("""
-    <div style="text-align:center; padding:80px 20px; color:#475569;">
-        <div style="font-size:4rem; margin-bottom:16px;">📦</div>
-        <div style="font-size:1.4rem; font-weight:600; color:#64748b; margin-bottom:8px;">No Data Loaded</div>
-        <div style="font-size:0.9rem;">Open the sidebar (←) and click <strong style="color:#94a3b8;">Fetch / Refresh Data</strong></div>
-    </div>
-    """, unsafe_allow_html=True)
+    <div style="text-align:center;padding:80px 20px;color:#475569;">
+        <div style="font-size:3.5rem;margin-bottom:14px;">📦</div>
+        <div style="font-size:1.3rem;font-weight:600;color:#64748b;margin-bottom:8px;">No Data Loaded</div>
+        <div style="font-size:0.88rem;">Open the sidebar ← and click <strong>Refresh Data</strong></div>
+    </div>""", unsafe_allow_html=True)
     st.stop()
 
 
 # ─── Filters ──────────────────────────────────────────────────────────────────
-col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 2, 1.5])
+col1, col2, col3, col4, col5, col6, col7 = st.columns([3, 2, 1.8, 1.8, 1.8, 1.8, 1.3])
+
 with col1:
     search = st.text_input("", placeholder="🔍 Search by name or SKU...", label_visibility="collapsed")
 with col2:
@@ -391,11 +378,19 @@ with col4:
     cats = ["All Categories"] + sorted(df_all["Category"].dropna().unique().tolist())
     selected_cat = st.selectbox("", cats, label_visibility="collapsed")
 with col5:
+    status_options = ["All Status", "🟢 In Stock", "🟡 Low", "🟠 Critical", "🔴 Out of Stock"]
+    selected_status = st.selectbox("", status_options, label_visibility="collapsed")
+with col6:
+    stock_filter_options = ["All Stock Levels", "More than Zero", "Zero", "Non-Zero", "Less than Zero"]
+    selected_stock_filter = st.selectbox("", stock_filter_options, label_visibility="collapsed")
+with col7:
     export_btn = st.button("⬇️ Export", use_container_width=True)
 
 
 # ─── Filter Logic ─────────────────────────────────────────────────────────────
 df = df_all.copy()
+details_map = st.session_state.details_map
+
 if search:
     df = df[df["Name"].str.contains(search, case=False, na=False) |
             df["SKU"].astype(str).str.contains(search, case=False, na=False)]
@@ -404,83 +399,105 @@ if selected_brand != "All Brands":
 if selected_cat != "All Categories":
     df = df[df["Category"] == selected_cat]
 
-# Filter by warehouse: keep only items that have stock in selected warehouse
-details_map = st.session_state.details_map
+# Status filter
+status_map_filter = {
+    "🟢 In Stock": "ok", "🟡 Low": "low",
+    "🟠 Critical": "critical", "🔴 Out of Stock": "out"
+}
+if selected_status != "All Status":
+    df = df[df["Status"] == status_map_filter[selected_status]]
+
+# Warehouse filter
 if selected_wh != "All Warehouses":
-    def has_wh_stock(item_id):
-        return details_map.get(item_id, {}).get(selected_wh, {}).get("avail", 0) > 0
-    df = df[df["item_id"].apply(has_wh_stock)]
+    def get_wh_avail(item_id):
+        return details_map.get(item_id, {}).get(selected_wh, {}).get("avail", 0)
+    df = df[df["item_id"].map(get_wh_avail) > 0]
+
+# Stock level filter — applies to the warehouse if selected, else Total Stock
+def get_stock_val(item_id):
+    if selected_wh != "All Warehouses":
+        return details_map.get(item_id, {}).get(selected_wh, {}).get("avail", 0)
+    return df_all.loc[df_all["item_id"] == item_id, "Total Stock"].values[0] if item_id in df_all["item_id"].values else 0
+
+if selected_stock_filter == "More than Zero":
+    df = df[df["item_id"].map(get_stock_val) > 0]
+elif selected_stock_filter == "Zero":
+    df = df[df["item_id"].map(get_stock_val) == 0]
+elif selected_stock_filter == "Non-Zero":
+    df = df[df["item_id"].map(get_stock_val) != 0]
+elif selected_stock_filter == "Less than Zero":
+    df = df[df["item_id"].map(get_stock_val) < 0]
 
 
-# ─── Stats Cards (reactive to filters) ────────────────────────────────────────
-total_items   = len(df)
-total_brands  = df["Brand"].nunique()
-low_stock     = len(df[df["Status"] == "low"])
-critical      = len(df[df["Status"].isin(["critical", "out"])])
-out_of_stock  = len(df[df["Status"] == "out"])
-total_stock   = safe_int(df["Total Stock"].sum())
-total_commit  = safe_int(df["Committed"].sum())
+# ─── Stats Cards ──────────────────────────────────────────────────────────────
+total_items  = len(df)
+total_brands = df["Brand"].nunique()
+low_stock    = len(df[df["Status"] == "low"])
+critical     = len(df[df["Status"].isin(["critical", "out"])])
+out_of_stock = len(df[df["Status"] == "out"])
+total_stock  = safe_int(df["Total Stock"].sum())
+total_commit = safe_int(df["Committed"].sum())
 
 filter_label = ""
-if selected_wh != "All Warehouses":       filter_label = f" · {selected_wh}"
-elif selected_brand != "All Brands":      filter_label = f" · {selected_brand}"
-elif selected_cat != "All Categories":    filter_label = f" · {selected_cat}"
-elif search:                              filter_label = f" · \"{search}\""
+if selected_wh != "All Warehouses":         filter_label = f" · {selected_wh}"
+elif selected_brand != "All Brands":        filter_label = f" · {selected_brand}"
+elif selected_cat != "All Categories":      filter_label = f" · {selected_cat}"
+elif selected_status != "All Status":       filter_label = f" · {selected_status}"
+elif search:                                filter_label = f' · "{search}"'
 
 st.markdown(f"""
 <div class="stat-grid">
-    <div class="stat-card">
-        <div class="stat-label">Items{filter_label}</div>
-        <div class="stat-value">{total_items:,}</div>
-        <div class="stat-sub">{total_brands} brands · {len(df_all):,} total</div>
-    </div>
-    <div class="stat-card success">
-        <div class="stat-label">Available Units</div>
-        <div class="stat-value">{total_stock:,}</div>
-        <div class="stat-sub">actual available stock</div>
-    </div>
-    <div class="stat-card warning">
-        <div class="stat-label">Committed</div>
-        <div class="stat-value">{total_commit:,}</div>
-        <div class="stat-sub">reserved / pending orders</div>
-    </div>
-    <div class="stat-card danger">
-        <div class="stat-label">Critical / Out</div>
-        <div class="stat-value">{critical}</div>
-        <div class="stat-sub">{out_of_stock} completely out</div>
-    </div>
+  <div class="stat-card">
+    <div class="stat-label">Items{filter_label}</div>
+    <div class="stat-value">{total_items:,}</div>
+    <div class="stat-sub">{total_brands} brands · {len(df_all):,} total</div>
+  </div>
+  <div class="stat-card success">
+    <div class="stat-label">Available Units</div>
+    <div class="stat-value">{total_stock:,}</div>
+    <div class="stat-sub">actual available stock</div>
+  </div>
+  <div class="stat-card warning">
+    <div class="stat-label">Committed</div>
+    <div class="stat-value">{total_commit:,}</div>
+    <div class="stat-sub">reserved / pending orders</div>
+  </div>
+  <div class="stat-card danger">
+    <div class="stat-label">Critical / Out</div>
+    <div class="stat-value">{critical}</div>
+    <div class="stat-sub">{out_of_stock} completely out</div>
+  </div>
 </div>
 """, unsafe_allow_html=True)
 
 
-# ─── Warehouse Summary Cards (from details_map, reactive to filters) ──────────
+# ─── Warehouse Cards ──────────────────────────────────────────────────────────
 if st.session_state.warehouses:
-    show_warehouses = [selected_wh] if selected_wh != "All Warehouses" else st.session_state.warehouses
+    show_whs = [selected_wh] if selected_wh != "All Warehouses" else st.session_state.warehouses
     filtered_ids = set(df["item_id"].tolist())
-    wh_cards_html = "<div style='display:flex; gap:10px; flex-wrap:wrap; margin-bottom:24px;'>"
-    for wh in show_warehouses:
-        avail_total = 0
-        comm_total  = 0
-        for iid in filtered_ids:
-            wh_data = details_map.get(iid, {}).get(wh, {})
-            avail_total += wh_data.get("avail", 0)
-            comm_total  += wh_data.get("committed", 0)
-        wh_cards_html += f"""
-        <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:14px 18px;min-width:160px;flex:1;">
-            <div style="font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">🏭 {wh}</div>
-            <div style="display:flex;gap:16px;align-items:flex-end;">
-                <div>
-                    <div style="font-size:1.4rem;font-weight:700;color:#22c55e;">{safe_int(avail_total):,}</div>
-                    <div style="font-size:0.65rem;color:#64748b;">Available</div>
-                </div>
-                <div>
-                    <div style="font-size:1.4rem;font-weight:700;color:#f59e0b;">{safe_int(comm_total):,}</div>
-                    <div style="font-size:0.65rem;color:#64748b;">Committed</div>
-                </div>
+    wh_html = "<div style='display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;'>"
+    for wh in show_whs:
+        avail_t = sum(details_map.get(i,{}).get(wh,{}).get("avail",0)     for i in filtered_ids)
+        comm_t  = sum(details_map.get(i,{}).get(wh,{}).get("committed",0) for i in filtered_ids)
+        bg   = T["surface"]
+        bdr  = T["border"]
+        clr  = T["muted"]
+        wh_html += f"""
+        <div style="background:{bg};border:1px solid {bdr};border-radius:12px;padding:12px 16px;min-width:150px;flex:1;">
+          <div style="font-size:0.62rem;color:{clr};text-transform:uppercase;letter-spacing:1px;margin-bottom:5px;">🏭 {wh}</div>
+          <div style="display:flex;gap:14px;align-items:flex-end;">
+            <div>
+              <div style="font-size:1.3rem;font-weight:700;color:#22c55e;">{safe_int(avail_t):,}</div>
+              <div style="font-size:0.62rem;color:{T["dimmed"]};">Available</div>
             </div>
+            <div>
+              <div style="font-size:1.3rem;font-weight:700;color:#f59e0b;">{safe_int(comm_t):,}</div>
+              <div style="font-size:0.62rem;color:{T["dimmed"]};">Committed</div>
+            </div>
+          </div>
         </div>"""
-    wh_cards_html += "</div>"
-    st.markdown(wh_cards_html, unsafe_allow_html=True)
+    wh_html += "</div>"
+    st.markdown(wh_html, unsafe_allow_html=True)
 
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
@@ -488,33 +505,27 @@ alerts_label = f"🚨 Alerts ({critical})" if critical > 0 else "✅ Alerts"
 tab1, tab2, tab3 = st.tabs(["📋 Inventory Table", "📊 Stock Chart", alerts_label])
 
 
-# ── Tab 1: Inventory Table ────────────────────────────────────────────────────
+# ── Tab 1 ─────────────────────────────────────────────────────────────────────
 with tab1:
-    st.markdown(f"<div style='color:#64748b;font-size:0.8rem;margin-bottom:8px;'>Showing {len(df):,} of {len(df_all):,} items</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='color:{T['dimmed']};font-size:0.78rem;margin-bottom:6px;'>Showing {len(df):,} of {len(df_all):,} items</div>", unsafe_allow_html=True)
 
-    # Base columns always shown
     base_cols = ["SKU", "Name", "Brand", "Category", "Total Stock", "Committed", "Reorder Point", "Status"]
+    show_df = df[base_cols].copy()
 
-    # If a specific warehouse is selected, add its Available + Committed inline
     if selected_wh != "All Warehouses":
-        # Build a display df with the warehouse columns added on the fly
-        show_df = df[base_cols].copy()
         show_df.insert(4, f"{selected_wh} Avail",
-            df["item_id"].map(lambda i: safe_int(details_map.get(i, {}).get(selected_wh, {}).get("avail", 0))))
+            df["item_id"].map(lambda i: safe_int(details_map.get(i,{}).get(selected_wh,{}).get("avail",0))))
         show_df.insert(5, f"{selected_wh} Comm",
-            df["item_id"].map(lambda i: safe_int(details_map.get(i, {}).get(selected_wh, {}).get("committed", 0))))
-    else:
-        show_df = df[base_cols].copy()
+            df["item_id"].map(lambda i: safe_int(details_map.get(i,{}).get(selected_wh,{}).get("committed",0))))
 
     def highlight_row(row):
-        s = row.get("Status", "")
+        s = row.get("Status","")
         if s == "out":      return ["background-color:rgba(127,29,29,0.3)"]  * len(row)
         if s == "critical": return ["background-color:rgba(127,29,29,0.15)"] * len(row)
         if s == "low":      return ["background-color:rgba(113,63,18,0.2)"]  * len(row)
         return [""] * len(row)
 
-    styled = show_df.style.apply(highlight_row, axis=1)
-    st.dataframe(styled, use_container_width=True, height=520)
+    st.dataframe(show_df.style.apply(highlight_row, axis=1), use_container_width=True, height=500)
 
     if export_btn:
         csv = show_df.to_csv(index=False).encode("utf-8")
@@ -522,38 +533,33 @@ with tab1:
             file_name=f"inventory_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", mime="text/csv")
 
 
-# ── Tab 2: Stock Chart ────────────────────────────────────────────────────────
+# ── Tab 2 ─────────────────────────────────────────────────────────────────────
 with tab2:
     col_a, col_b = st.columns(2)
-
     with col_a:
         st.markdown("#### Stock Status Distribution")
-        status_counts = df["Status"].value_counts().reset_index()
-        status_counts.columns = ["Status", "Count"]
-        status_map = {"ok": "In Stock", "low": "Low", "critical": "Critical", "out": "Out of Stock"}
-        status_counts["Status"] = status_counts["Status"].map(status_map)
-        st.bar_chart(status_counts.set_index("Status"), use_container_width=True, color="#3b82f6")
-
+        sc = df["Status"].value_counts().reset_index()
+        sc.columns = ["Status","Count"]
+        sc["Status"] = sc["Status"].map({"ok":"In Stock","low":"Low","critical":"Critical","out":"Out of Stock"})
+        st.bar_chart(sc.set_index("Status"), use_container_width=True, color="#3b82f6")
     with col_b:
         st.markdown("#### Top 15 Items by Stock")
-        top_items = df.nlargest(15, "Total Stock")[["Name", "Total Stock"]].copy()
-        top_items["Name"] = top_items["Name"].str[:30]
-        st.bar_chart(top_items.set_index("Name"), use_container_width=True, color="#22c55e")
+        top = df.nlargest(15,"Total Stock")[["Name","Total Stock"]].copy()
+        top["Name"] = top["Name"].str[:28]
+        st.bar_chart(top.set_index("Name"), use_container_width=True, color="#22c55e")
 
-    # Warehouse breakdown from details_map
     if st.session_state.warehouses:
-        st.markdown("#### Available Stock by Warehouse")
-        filtered_ids = set(df["item_id"].tolist())
+        st.markdown("#### Stock by Warehouse")
+        fids = set(df["item_id"].tolist())
         wh_rows = []
         for wh in st.session_state.warehouses:
-            avail = sum(details_map.get(iid, {}).get(wh, {}).get("avail", 0) for iid in filtered_ids)
-            comm  = sum(details_map.get(iid, {}).get(wh, {}).get("committed", 0) for iid in filtered_ids)
+            avail = sum(details_map.get(i,{}).get(wh,{}).get("avail",0)     for i in fids)
+            comm  = sum(details_map.get(i,{}).get(wh,{}).get("committed",0) for i in fids)
             wh_rows.append({"Warehouse": wh, "Available": safe_int(avail), "Committed": safe_int(comm)})
-        wh_df = pd.DataFrame(wh_rows).set_index("Warehouse")
-        st.bar_chart(wh_df, use_container_width=True)
+        st.bar_chart(pd.DataFrame(wh_rows).set_index("Warehouse"), use_container_width=True)
 
 
-# ── Tab 3: Alerts ─────────────────────────────────────────────────────────────
+# ── Tab 3 ─────────────────────────────────────────────────────────────────────
 with tab3:
     out_items  = df[df["Status"] == "out"]
     crit_items = df[df["Status"] == "critical"]
@@ -563,44 +569,25 @@ with tab3:
         st.markdown("<div style='text-align:center;padding:40px;color:#64748b;'>✅ All items are well-stocked!</div>", unsafe_allow_html=True)
     else:
         def wh_line(item_id):
-            wh_map = details_map.get(item_id, {})
-            if not wh_map:
-                return ""
             parts = [
                 f"{wh}: <b>{safe_int(v['avail'])}</b> avail / <b>{safe_int(v['committed'])}</b> comm"
-                for wh, v in wh_map.items() if v.get("avail", 0) > 0 or v.get("committed", 0) > 0
+                for wh, v in details_map.get(item_id, {}).items()
+                if v.get("avail",0) > 0 or v.get("committed",0) > 0
             ]
             return " &nbsp;|&nbsp; ".join(parts)
 
-        if len(out_items) > 0:
-            st.markdown(f"##### 🔴 Out of Stock ({len(out_items)} items)")
-            for _, row in out_items.iterrows():
+        for section, items, card_cls, icon in [
+            ("Out of Stock",   out_items,  "alert-card",         "🔴"),
+            ("Critical Stock", crit_items, "alert-card warning", "🟠"),
+            ("Low Stock",      low_items,  "alert-card warning", "🟡"),
+        ]:
+            if len(items) == 0: continue
+            st.markdown(f"##### {icon} {section} ({len(items)} items)")
+            for _, row in items.iterrows():
                 whl = wh_line(row["item_id"])
                 st.markdown(f"""
-                <div class="alert-card">
-                    <div class="alert-title">{row['Name']}</div>
-                    <div class="alert-sub">SKU: {row['SKU']} · Brand: {row['Brand']} · Reorder: {safe_int(row['Reorder Point'])}</div>
-                    {f'<div class="alert-sub" style="margin-top:4px;font-size:0.75rem;">{whl}</div>' if whl else ''}
-                </div>""", unsafe_allow_html=True)
-
-        if len(crit_items) > 0:
-            st.markdown(f"##### 🟠 Critical Stock ({len(crit_items)} items)")
-            for _, row in crit_items.iterrows():
-                whl = wh_line(row["item_id"])
-                st.markdown(f"""
-                <div class="alert-card warning">
-                    <div class="alert-title">{row['Name']}</div>
-                    <div class="alert-sub">SKU: {row['SKU']} · Stock: {safe_int(row['Total Stock'])} · Committed: {safe_int(row['Committed'])} · Reorder: {safe_int(row['Reorder Point'])}</div>
-                    {f'<div class="alert-sub" style="margin-top:4px;font-size:0.75rem;">{whl}</div>' if whl else ''}
-                </div>""", unsafe_allow_html=True)
-
-        if len(low_items) > 0:
-            st.markdown(f"##### 🟡 Low Stock ({len(low_items)} items)")
-            for _, row in low_items.iterrows():
-                whl = wh_line(row["item_id"])
-                st.markdown(f"""
-                <div class="alert-card warning">
-                    <div class="alert-title">{row['Name']}</div>
-                    <div class="alert-sub">SKU: {row['SKU']} · Stock: {safe_int(row['Total Stock'])} · Committed: {safe_int(row['Committed'])} · Reorder: {safe_int(row['Reorder Point'])}</div>
-                    {f'<div class="alert-sub" style="margin-top:4px;font-size:0.75rem;">{whl}</div>' if whl else ''}
+                <div class="{card_cls}">
+                  <div class="alert-title">{row["Name"]}</div>
+                  <div class="alert-sub">SKU: {row["SKU"]} · Stock: {safe_int(row["Total Stock"])} · Committed: {safe_int(row["Committed"])} · Reorder: {safe_int(row["Reorder Point"])}</div>
+                  {f'<div class="alert-sub" style="margin-top:3px;font-size:0.73rem;">{whl}</div>' if whl else ""}
                 </div>""", unsafe_allow_html=True)
